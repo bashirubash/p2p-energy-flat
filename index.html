@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Secure P2P Energy Market</title>
+</head>
+<body>
+    <h1>Decentralized Energy Marketplace</h1>
+    <form action="/offer" method="post">
+        <label>Energy (kWh):</label><input type="number" name="energy" required><br>
+        <label>Price (ETH):</label><input type="text" name="price" required><br>
+        <input type="submit" value="List Energy">
+    </form>
+
+    <h2>Available Listings</h2>
+    <table border="1">
+        <tr><th>ID</th><th>Seller</th><th>Buyer</th><th>Energy</th><th>Price</th><th>Status</th><th>Action</th></tr>
+        {% for t in trades %}
+        <tr>
+            <td>{{ t.id }}</td>
+            <td>{{ t.seller }}</td>
+            <td>{{ t.buyer if t.buyer != '0x0000000000000000000000000000000000000000' else 'None' }}</td>
+            <td>{{ t.energy }}</td>
+            <td>{{ t.price }}</td>
+            <td>{{ 'Completed' if t.completed else 'Open' }}</td>
+            <td>
+                {% if not t.completed %}
+                <a href="/buy/{{ t.id }}/{{ t.price }}">Buy</a>
+                {% else %} - {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
