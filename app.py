@@ -21,17 +21,19 @@ contract = web3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS),
 @app.route('/')
 def home():
     trade_data = []
-    trade_count = contract.functions.tradeCounter().call()
-    for i in range(trade_count):
-        t = contract.functions.getTrade(i).call()
-        trade_data.append({
-            "id": i,
-            "seller": t[0],
-            "buyer": t[1],
-            "energy": t[2],
-            "price": web3.from_wei(t[3], 'ether'),
-            "completed": t[4]
-        })
+    for i in range(10):  # Loop up to 10 trades
+        try:
+            t = contract.functions.getTrade(i).call()
+            trade_data.append({
+                "id": i,
+                "seller": t[0],
+                "buyer": t[1],
+                "energy": t[2],
+                "price": web3.from_wei(t[3], 'ether'),
+                "completed": t[4]
+            })
+        except:
+            break
     return render_template("index.html", trades=trade_data)
 
 @app.route('/offer', methods=["POST"])
