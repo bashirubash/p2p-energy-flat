@@ -163,7 +163,7 @@ def offer():
         'gasPrice': web3.to_wei('15', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    web3.eth.send_raw_transaction(signed_tx.raw_transaction)  # ✅ fixed line
     return redirect(url_for('home'))
 
 @app.route('/buy/<int:trade_id>/<float:price>')
@@ -178,7 +178,7 @@ def buy(trade_id, price):
         'gasPrice': web3.to_wei('15', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.rawTransaction)
+    web3.eth.send_raw_transaction(signed_tx.raw_transaction)  # ✅ fixed line
     return redirect(url_for('home'))
 
 if __name__ == '__main__':
