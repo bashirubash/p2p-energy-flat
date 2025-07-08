@@ -25,7 +25,6 @@ contract = web3.eth.contract(
 def render_index_html(trades):
     with open("index.html", "r") as f:
         html = f.read()
-    # Optionally replace placeholders in HTML if you add {{PLACEHOLDER}} tags
     return Response(html, mimetype='text/html')
 
 @app.route('/')
@@ -79,4 +78,5 @@ def buy(trade_id, price):
     return redirect(url_for('home'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # ✅ Required for Render deployment
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=True)
