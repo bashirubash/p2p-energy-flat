@@ -1,10 +1,11 @@
-from flask import Flask, request, redirect, url_for, Response
+from flask import Flask, request, redirect, url_for, Response, flash
 from web3 import Web3
 import json
 import os
 from dotenv import load_dotenv
 
 app = Flask(__name__)
+app.secret_key = "your_secret_key_here"  # Needed for flash messages
 load_dotenv()
 
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
@@ -22,13 +23,13 @@ contract = web3.eth.contract(
     abi=contract_abi
 )
 
-def render_index_html(trades):
+def render_index_html(trades, message=""):
     rows = ""
     for t in trades:
         buyer = t["buyer"] if t["buyer"] != "0x0000000000000000000000000000000000000000" else "None"
-        status = "Completed" if t["completed"] else "Open"
+        status = "✅ Completed" if t["completed"] else "🟢 Open"
         action = f'<a href="/buy/{t["id"]}/{t["price"]}">Buy</a>' if not t["completed"] else "-"
-        
+
         rows += f"""
         <tr>
             <td>{t["id"]}</td>
@@ -46,7 +47,7 @@ def render_index_html(trades):
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>Decentralized Energy Marketplace</title>
+        <title>P2P Energy Marketplace</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -56,6 +57,11 @@ def render_index_html(trades):
             h1 {{
                 color: #2c3e50;
                 text-align: center;
+            }}
+            .message {{
+                text-align: center;
+                color: green;
+                font-weight: bold;
             }}
             form {{
                 margin: 0 auto 30px;
@@ -104,6 +110,7 @@ def render_index_html(trades):
     </head>
     <body>
         <h1>Decentralized Energy Marketplace</h1>
+        {f'<p class="message">{message}</p>' if message else ''}
         <form method="POST" action="/offer">
             <input type="number" name="energy" placeholder="Energy (kWh)" required>
             <input type="number" step="0.01" name="price" placeholder="Price (ETH)" required>
@@ -131,6 +138,7 @@ def render_index_html(trades):
     """
     return Response(html, mimetype='text/html')
 
+
 @app.route('/')
 def home():
     trade_data = []
@@ -147,7 +155,9 @@ def home():
             })
         except:
             break
-    return render_index_html(trade_data)
+    message = request.args.get('msg', '')
+    return render_index_html(trade_data, message=message)
+
 
 @app.route('/offer', methods=["POST"])
 def offer():
@@ -163,11 +173,17 @@ def offer():
         'gasPrice': web3.to_wei('15', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.raw_transaction)  # ✅ fixed line
-    return redirect(url_for('home'))
+    web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    return redirect(url_for('home', msg="Offer submitted successfully!"))
+
 
 @app.route('/buy/<int:trade_id>/<float:price>')
 def buy(trade_id, price):
+    # Check if trade is already completed
+    trade = contract.functions.getTrade(trade_id).call()
+    if trade[4]:  # completed == True
+        return redirect(url_for('home', msg="❌ This trade is already completed."))
+
     amount_wei = web3.to_wei(price, 'ether')
     nonce = web3.eth.get_transaction_count(PUBLIC_KEY)
     tx = contract.functions.buyEnergy(trade_id).build_transaction({
@@ -178,8 +194,8 @@ def buy(trade_id, price):
         'gasPrice': web3.to_wei('15', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.raw_transaction)  # ✅ fixed line
-    return redirect(url_for('home'))
+    web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    return redirect(url_for('home', msg="✅ Trade executed successfully!"))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=True)
