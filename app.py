@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for
+from flask import Flask, request, redirect, url_for, Response
 from web3 import Web3
 import json
 import os
@@ -13,15 +13,25 @@ INFURA_URL = os.getenv("INFURA_URL")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
 
 web3 = Web3(Web3.HTTPProvider(INFURA_URL))
+
 with open("EnergyMarketplaceABI.json", "r") as abi_file:
     contract_abi = json.load(abi_file)
 
-contract = web3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=contract_abi)
+contract = web3.eth.contract(
+    address=Web3.to_checksum_address(CONTRACT_ADDRESS),
+    abi=contract_abi
+)
+
+def render_index_html(trades):
+    with open("index.html", "r") as f:
+        html = f.read()
+    # Optionally replace placeholders in HTML if you add {{PLACEHOLDER}} tags
+    return Response(html, mimetype='text/html')
 
 @app.route('/')
 def home():
     trade_data = []
-    for i in range(10):  # Loop up to 10 trades
+    for i in range(10):  # Try up to 10 trades
         try:
             t = contract.functions.getTrade(i).call()
             trade_data.append({
@@ -34,7 +44,7 @@ def home():
             })
         except:
             break
-    return render_template("index.html", trades=trade_data)
+    return render_index_html(trade_data)
 
 @app.route('/offer', methods=["POST"])
 def offer():
