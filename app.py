@@ -1,82 +1,125 @@
-from flask import Flask, request, redirect, url_for, Response
-from web3 import Web3
-import json
-import os
-from dotenv import load_dotenv
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Decentralized Energy Marketplace</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 30px;
+      background-color: #f5f7fa;
+    }
 
-app = Flask(__name__)
-load_dotenv()
+    h1 {
+      color: #2c3e50;
+      text-align: center;
+    }
 
-PRIVATE_KEY = os.getenv("PRIVATE_KEY")
-PUBLIC_KEY = os.getenv("PUBLIC_KEY")
-INFURA_URL = os.getenv("INFURA_URL")
-CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
+    form {
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      max-width: 300px;
+      gap: 10px;
+    }
 
-web3 = Web3(Web3.HTTPProvider(INFURA_URL))
+    input[type="text"], input[type="number"] {
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
 
-with open("EnergyMarketplaceABI.json", "r") as abi_file:
-    contract_abi = json.load(abi_file)
+    button {
+      padding: 10px;
+      background-color: #2980b9;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
 
-contract = web3.eth.contract(
-    address=Web3.to_checksum_address(CONTRACT_ADDRESS),
-    abi=contract_abi
-)
+    button:hover {
+      background-color: #1f5f87;
+    }
 
-def render_index_html(trades):
-    with open("index.html", "r") as f:
-        html = f.read()
-    return Response(html, mimetype='text/html')
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      margin-top: 30px;
+    }
 
-@app.route('/')
-def home():
-    trade_data = []
-    for i in range(10):  # Try up to 10 trades
-        try:
-            t = contract.functions.getTrade(i).call()
-            trade_data.append({
-                "id": i,
-                "seller": t[0],
-                "buyer": t[1],
-                "energy": t[2],
-                "price": web3.from_wei(t[3], 'ether'),
-                "completed": t[4]
-            })
-        except:
-            break
-    return render_index_html(trade_data)
+    th, td {
+      padding: 12px;
+      border: 1px solid #ddd;
+      text-align: center;
+    }
 
-@app.route('/offer', methods=["POST"])
-def offer():
-    energy = int(request.form['energy'])
-    price_eth = float(request.form['price'])
-    price_wei = web3.to_wei(price_eth, 'ether')
+    th {
+      background-color: #34495e;
+      color: white;
+    }
 
-    nonce = web3.eth.get_transaction_count(PUBLIC_KEY)
-    tx = contract.functions.offerEnergy(energy, price_wei).build_transaction({
-        'from': PUBLIC_KEY,
-        'nonce': nonce,
-        'gas': 300000,
-        'gasPrice': web3.to_wei('15', 'gwei')
-    })
-    signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    return redirect(url_for('home'))
+    a {
+      color: #2980b9;
+      text-decoration: none;
+    }
 
-@app.route('/buy/<int:trade_id>/<float:price>')
-def buy(trade_id, price):
-    amount_wei = web3.to_wei(price, 'ether')
-    nonce = web3.eth.get_transaction_count(PUBLIC_KEY)
-    tx = contract.functions.buyEnergy(trade_id).build_transaction({
-        'from': PUBLIC_KEY,
-        'value': amount_wei,
-        'nonce': nonce,
-        'gas': 300000,
-        'gasPrice': web3.to_wei('15', 'gwei')
-    })
-    signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
-    web3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    return redirect(url_for('home'))
+    a:hover {
+      text-decoration: underline;
+    }
 
-if __name__ == '__main__':
-    # ✅ Required for Render deployment
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=True)
+    .center {
+      display: flex;
+      justify-content: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Decentralized Energy Marketplace</h1>
+
+  <div class="center">
+    <form action="/offer" method="POST">
+      <input type="number" name="energy" placeholder="Energy (kWh)" required>
+      <input type="number" name="price" step="0.01" placeholder="Price (ETH)" required>
+      <button type="submit">List Energy</button>
+    </form>
+  </div>
+
+  <h2>Available Listings</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Seller</th>
+        <th>Buyer</th>
+        <th>Energy</th>
+        <th>Price</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trades %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.seller }}</td>
+        <td>{{ t.buyer if t.buyer != '0x0000000000000000000000000000000000000000' else 'None' }}</td>
+        <td>{{ t.energy }}</td>
+        <td>{{ t.price }}</td>
+        <td>{{ 'Completed' if t.completed else 'Open' }}</td>
+        <td>
+          {% if not t.completed %}
+            <a href="/buy/{{ t.id }}/{{ t.price }}">Buy</a>
+          {% else %}
+            -
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+</body>
+</html>
