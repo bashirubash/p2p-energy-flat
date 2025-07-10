@@ -1,12 +1,11 @@
 services:
   - type: web
-    name: p2p-energy-flat
-    runtime: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python app.py"
+    name: p2p-energy-marketplace
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
     envVars:
       - key: FLASK_ENV
         value: production
-      - key: PYTHON_VERSION
-        value: 3.11.6
-    plan: free
+      - key: PORT
+        value: 10000
