@@ -2,7 +2,7 @@ services:
   - type: web
     name: p2p-energy-flat
     env: python
-    buildCommand: pip install --prefer-binary -r requirements.txt
+    buildCommand: pip install --no-cache-dir --prefer-binary -r requirements.txt
     startCommand: python app.py
     envVars:
       - key: FLASK_ENV
