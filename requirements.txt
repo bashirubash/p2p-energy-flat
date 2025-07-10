@@ -4,4 +4,4 @@ python-dotenv==1.1.1
 flask_login==0.6.3
 twilio==8.11.0
 flask_sqlalchemy==3.1.1
-pillow==9.5.0  # ✅ Compatible with Render and Python 3.13
+Pillow==9.4.0
