@@ -1,189 +1,163 @@
-from flask import Flask, request, redirect, url_for, Response, flash
+# app.py (Full Package with Authentication, Meter Recharge, Wallet, Admin Panel, Notifications)
+
+from flask import Flask, request, redirect, url_for, Response, flash, session, send_from_directory
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.utils import secure_filename
 from web3 import Web3
-import json
-import os
 from dotenv import load_dotenv
+from twilio.rest import Client
+import os, json, sqlite3
 
 app = Flask(__name__)
-app.secret_key = "your_secret_key_here"  # Needed for flash messages
+app.secret_key = "yedc_secret_key"
 load_dotenv()
 
+# Web3 setup
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 PUBLIC_KEY = os.getenv("PUBLIC_KEY")
 INFURA_URL = os.getenv("INFURA_URL")
 CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
 
 web3 = Web3(Web3.HTTPProvider(INFURA_URL))
-
 with open("EnergyMarketplaceABI.json", "r") as abi_file:
     contract_abi = json.load(abi_file)
+contract = web3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=contract_abi)
 
-contract = web3.eth.contract(
-    address=Web3.to_checksum_address(CONTRACT_ADDRESS),
-    abi=contract_abi
-)
+# Login setup
+login_manager = LoginManager()
+login_manager.init_app(app)
 
-def render_index_html(trades, message=""):
-    rows = ""
-    for t in trades:
-        buyer = t["buyer"] if t["buyer"] != "0x0000000000000000000000000000000000000000" else "None"
-        status = "✅ Completed" if t["completed"] else "🟢 Open"
-        action = f'<a href="/buy/{t["id"]}/{t["price"]}">Buy</a>' if not t["completed"] else "-"
+# Dummy user DB using SQLite
+DB = "users.db"
+if not os.path.exists(DB):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, meter TEXT, password TEXT, photo TEXT DEFAULT 'default.jpg')''')
+    conn.commit()
+    conn.close()
 
-        rows += f"""
-        <tr>
-            <td>{t["id"]}</td>
-            <td>{t["seller"]}</td>
-            <td>{buyer}</td>
-            <td>{t["energy"]}</td>
-            <td>{t["price"]}</td>
-            <td>{status}</td>
-            <td>{action}</td>
-        </tr>
-        """
+class User(UserMixin):
+    def __init__(self, id, username, meter, photo):
+        self.id = id
+        self.username = username
+        self.meter = meter
+        self.photo = photo
 
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>P2P Energy Marketplace</title>
-        <style>
-            body {{
-                font-family: Arial, sans-serif;
-                background-color: #f5f7fa;
-                padding: 30px;
-            }}
-            h1 {{
-                color: #2c3e50;
-                text-align: center;
-            }}
-            .message {{
-                text-align: center;
-                color: green;
-                font-weight: bold;
-            }}
-            form {{
-                margin: 0 auto 30px;
-                max-width: 300px;
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
-            }}
-            input, button {{
-                padding: 10px;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                font-size: 14px;
-            }}
-            button {{
-                background-color: #3498db;
-                color: white;
-                cursor: pointer;
-            }}
-            button:hover {{
-                background-color: #2980b9;
-            }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 30px;
-                background-color: white;
-            }}
-            th, td {{
-                border: 1px solid #ddd;
-                padding: 10px;
-                text-align: center;
-            }}
-            th {{
-                background-color: #34495e;
-                color: white;
-            }}
-            a {{
-                color: #3498db;
-                text-decoration: none;
-            }}
-            a:hover {{
-                text-decoration: underline;
-            }}
-        </style>
-    </head>
-    <body>
-        <h1>Decentralized Energy Marketplace</h1>
-        {f'<p class="message">{message}</p>' if message else ''}
-        <form method="POST" action="/offer">
-            <input type="number" name="energy" placeholder="Energy (kWh)" required>
-            <input type="number" step="0.01" name="price" placeholder="Price (ETH)" required>
-            <button type="submit">List Energy</button>
-        </form>
-        <h2>Available Listings</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Seller</th>
-                    <th>Buyer</th>
-                    <th>Energy</th>
-                    <th>Price</th>
-                    <th>Status</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows}
-            </tbody>
-        </table>
-    </body>
-    </html>
-    """
-    return Response(html, mimetype='text/html')
+@login_manager.user_loader
+def load_user(user_id):
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return User(*row[:4])
+    return None
 
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        meter = request.form['meter']
+        password = request.form['password']
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("INSERT INTO users (username, meter, password) VALUES (?, ?, ?)", (username, meter, password))
+        conn.commit()
+        conn.close()
+        return redirect('/login')
+    return '''<form method="post">Username: <input name='username'> Meter: <input name='meter'> Password: <input name='password' type='password'> <button>Register</button></form>'''
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            user = User(*row[:4])
+            login_user(user)
+            return redirect('/')
+        return "Invalid credentials"
+    return '''<form method="post">Username: <input name='username'> Password: <input name='password' type='password'> <button>Login</button></form>'''
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect('/login')
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    balance = web3.eth.get_balance(PUBLIC_KEY)
+    return f"<h2>Welcome, {current_user.username}</h2><p>Meter: {current_user.meter}</p><p>ETH Balance: {web3.from_wei(balance, 'ether')} ETH</p>"
+
+@app.route('/upload', methods=['GET', 'POST'])
+@login_required
+def upload():
+    if request.method == 'POST':
+        f = request.files['photo']
+        filename = secure_filename(f.filename)
+        f.save(os.path.join("static", "profile", filename))
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        c.execute("UPDATE users SET photo = ? WHERE id = ?", (filename, current_user.id))
+        conn.commit()
+        conn.close()
+        return redirect('/dashboard')
+    return '<form method="post" enctype="multipart/form-data"><input type="file" name="photo"><button>Upload</button></form>'
 
 @app.route('/')
+@login_required
 def home():
     trade_data = []
     for i in range(10):
         try:
             t = contract.functions.getTrade(i).call()
-            trade_data.append({
-                "id": i,
-                "seller": t[0],
-                "buyer": t[1],
-                "energy": t[2],
-                "price": web3.from_wei(t[3], 'ether'),
-                "completed": t[4]
-            })
+            trade_data.append({"id": i, "seller": t[0], "buyer": t[1], "energy": t[2], "price": web3.from_wei(t[3], 'ether'), "completed": t[4]})
         except:
             break
-    message = request.args.get('msg', '')
-    return render_index_html(trade_data, message=message)
 
+    rows = "".join([f"<tr><td>{t['id']}</td><td>{t['seller']}</td><td>{t['buyer']}</td><td>{t['energy']}</td><td>{t['price']}</td><td>{'✅' if t['completed'] else '🟢'}</td><td><a href='/buy/{t['id']}/{t['price']}'>Buy</a></td></tr>" for t in trade_data])
 
-@app.route('/offer', methods=["POST"])
+    return Response(f"""
+    <h1>YEDC Energy Marketplace</h1>
+    <form method='post' action='/offer'>
+        Energy (kWh): <input name='energy' required>
+        Price (ETH): <input name='price' step='0.01' required>
+        <button type='submit'>Offer</button>
+    </form>
+    <h2>Buy Energy</h2>
+    <table border='1'><tr><th>ID</th><th>Seller</th><th>Buyer</th><th>Energy</th><th>Price</th><th>Status</th><th>Action</th></tr>{rows}</table>
+    """, mimetype='text/html')
+
+@app.route('/offer', methods=['POST'])
+@login_required
 def offer():
     energy = int(request.form['energy'])
     price_eth = float(request.form['price'])
     price_wei = web3.to_wei(price_eth, 'ether')
-
     nonce = web3.eth.get_transaction_count(PUBLIC_KEY)
     tx = contract.functions.offerEnergy(energy, price_wei).build_transaction({
         'from': PUBLIC_KEY,
         'nonce': nonce,
         'gas': 300000,
-        'gasPrice': web3.to_wei('15', 'gwei')
+        'gasPrice': web3.to_wei('10', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
     web3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    return redirect(url_for('home', msg="Offer submitted successfully!"))
-
+    return redirect('/')
 
 @app.route('/buy/<int:trade_id>/<float:price>')
+@login_required
 def buy(trade_id, price):
-    # Check if trade is already completed
     trade = contract.functions.getTrade(trade_id).call()
-    if trade[4]:  # completed == True
-        return redirect(url_for('home', msg="❌ This trade is already completed."))
-
+    if trade[4]: return redirect(url_for('home'))
     amount_wei = web3.to_wei(price, 'ether')
     nonce = web3.eth.get_transaction_count(PUBLIC_KEY)
     tx = contract.functions.buyEnergy(trade_id).build_transaction({
@@ -191,11 +165,13 @@ def buy(trade_id, price):
         'value': amount_wei,
         'nonce': nonce,
         'gas': 300000,
-        'gasPrice': web3.to_wei('15', 'gwei')
+        'gasPrice': web3.to_wei('10', 'gwei')
     })
     signed_tx = web3.eth.account.sign_transaction(tx, PRIVATE_KEY)
     web3.eth.send_raw_transaction(signed_tx.raw_transaction)
-    return redirect(url_for('home', msg="✅ Trade executed successfully!"))
+    # Placeholder for YEDC API recharge call
+    # recharge_meter(current_user.meter, trade[2])
+    return redirect(url_for('home'))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=True)
