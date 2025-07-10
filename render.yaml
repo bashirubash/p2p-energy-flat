@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: p2p-energy-marketplace
+    name: p2p-energy-flat
     env: python
     buildCommand: pip install --prefer-binary -r requirements.txt
     startCommand: python app.py
