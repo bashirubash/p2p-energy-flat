@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string
+from flask import Flask, request, redirect, session, flash, render_template_string, jsonify
 from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
@@ -86,24 +86,28 @@ def dashboard():
     if session['role'] == 'admin':
         return redirect('/admin')
 
-    units = Unit.query.all()
-    transactions = Transaction.query.filter_by(buyer_email=session['user']).all()
-    return render_template_string(buyer_dashboard_html, units=units, transactions=transactions, meter=session['meter'])
+    units = Unit.query.filter_by(status='Available').all()
+    return render_template_string(buyer_dashboard_html, units=units, meter=session['meter'])
 
-@app.route('/buy/<int:unit_id>')
-def buy(unit_id):
-    if session.get('role') != 'buyer':
-        return redirect('/dashboard')
+@app.route('/confirm_purchase', methods=['POST'])
+def confirm_purchase():
+    data = request.json
+    unit_id = data['unit_id']
     unit = Unit.query.get(unit_id)
-    if unit.status != 'Available':
-        flash('Unit not available')
-    else:
-        tx = Transaction(buyer_email=session['user'], meter_number=session['meter'], unit_id=unit.id, amount_eth=unit.price_eth, band=unit.band)
-        unit.status = 'Pending'
+    if unit and unit.status == 'Available':
+        tx = Transaction(
+            buyer_email=session['user'],
+            meter_number=session['meter'],
+            unit_id=unit.id,
+            amount_eth=unit.price_eth,
+            band=unit.band,
+            status="Pending"
+        )
+        unit.status = "Pending"
         db.session.add(tx)
         db.session.commit()
-        flash('Payment sent. Waiting for admin approval.')
-    return redirect('/dashboard')
+        return jsonify({"message": "Purchase recorded"})
+    return jsonify({"message": "Error: Unit not available"}), 400
 
 @app.route('/admin')
 def admin():
@@ -149,95 +153,96 @@ def logout():
     session.clear()
     return redirect('/login')
 
-# ---- HTML ----
+# HTML Templates with consistent style
+
 register_html = """
-<!DOCTYPE html><html><head><title>Register - YEDC</title>
+<!DOCTYPE html><html><head><title>Register</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light p-5">
-<div class="container"><h2 class="text-center">YEDC Registration</h2>
-<form method="POST" class="mt-4">
+</head><body class="bg-light">
+<div class="container p-5"><h2>YEDC Register</h2>
+<form method="POST">
 <input name="name" class="form-control mb-2" placeholder="Name" required>
 <input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
 <input name="email" class="form-control mb-2" placeholder="Email" required>
 <input name="password" class="form-control mb-2" type="password" placeholder="Password" required>
-<input name="confirm" class="form-control mb-3" type="password" placeholder="Confirm Password" required>
-<button type="submit" class="btn btn-primary w-100">Register</button>
-</form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div></body></html>
+<input name="confirm" class="form-control mb-2" type="password" placeholder="Confirm Password" required>
+<button class="btn btn-primary w-100">Register</button>
+</form><a href="/login" class="d-block mt-3">Login</a></div></body></html>
 """
 
 login_html = """
-<!DOCTYPE html><html><head><title>Login - YEDC</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="bg-light p-5"><div class="container">
-<h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
+<!DOCTYPE html><html><head><title>Login</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light"><div class="container p-5"><h2>YEDC Login</h2>
+<form method="POST">
 <input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
 <input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
-<button type="submit" class="btn btn-success w-100">Login</button>
-</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
+<button class="btn btn-success w-100">Login</button>
+</form><a href="/register" class="d-block mt-3">Register</a></div></body></html>
 """
 
 buyer_dashboard_html = """
-<!DOCTYPE html><html><head><title>Buyer Dashboard</title>
+<!DOCTYPE html><html><head><title>Dashboard</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
-<body><div class="container p-4">
-<h3>YEDC Buyer Dashboard</h3><p>Meter: {{ meter }}</p>
-{% with messages = get_flashed_messages() %}
-{% if messages %}<div class="alert alert-success">{{ messages[0] }}</div>{% endif %}{% endwith %}
-<table class="table table-bordered mt-4">
-<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
+<body><div class="container p-4"><h3>YEDC Buyer Dashboard</h3>
+<table class="table">
+<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Action</th></tr>
 {% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>{% if u.status == 'Available' %}
-<button onclick="buy('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
-{% else %}-{% endif %}</td></tr>
+<tr><td>{{u.id}}</td><td>{{u.units}}</td><td>{{u.price_eth}}</td><td>{{u.band}}</td>
+<td><button onclick="buy('{{u.id}}','{{u.price_eth}}')" class="btn btn-success btn-sm">Buy</button></td></tr>
 {% endfor %}
 </table>
+<a href="/logout" class="btn btn-danger">Logout</a>
 <script>
 async function buy(id, price){
     if(window.ethereum){
         const web3 = new Web3(window.ethereum);
-        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        await ethereum.request({ method: 'eth_requestAccounts' });
         const accounts = await web3.eth.getAccounts();
         await web3.eth.sendTransaction({
             from: accounts[0],
             to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
             value: web3.utils.toWei(price, 'ether')
         });
-        window.location.href='/buy/'+id;
+        await fetch('/confirm_purchase', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({unit_id:id})
+        });
+        alert("Payment Sent! Transaction pending admin approval.");
+        location.reload();
     }else{
         alert('Metamask not detected');
     }
 }
-</script>
-<a href="/logout" class="btn btn-danger mt-3">Logout</a>
-</div></body></html>
+</script></div></body></html>
 """
 
 admin_dashboard_html = """
-<!DOCTYPE html><html><head><title>Admin Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body><div class="d-flex">
+<!DOCTYPE html><html><head><title>Admin</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body><div class="d-flex">
 <div class="bg-dark p-3" style="width:200px; height:100vh;">
-<h5 class="text-white">Admin Panel</h5>
+<h5 class="text-white">Admin</h5>
 <ul class="nav flex-column">
 <li><a href="/admin" class="nav-link text-white">View Units</a></li>
 <li><a href="/admin/pending" class="nav-link text-white">Pending Tx</a></li>
 <li><a href="/admin/completed" class="nav-link text-white">Completed Tx</a></li>
 <li><a href="/logout" class="nav-link text-white">Logout</a></li>
-</ul>
-</div>
+</ul></div>
 <div class="p-4 w-100">
-<h3>Units Listed</h3>
+<h3>Units</h3>
 <form method="POST" action="/admin/add_unit" class="row mb-4">
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
 <div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
-<div class="col"><button class="btn btn-primary">Add</button></div></form>
+<div class="col"><button class="btn btn-primary">Add</button></div>
+</form>
 <table class="table table-bordered">
 <tr><th>ID</th><th>Units</th><th>Price</th><th>Band</th><th>Status</th></tr>
 {% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td></tr>
+<tr><td>{{u.id}}</td><td>{{u.units}}</td><td>{{u.price_eth}}</td><td>{{u.band}}</td><td>{{u.status}}</td></tr>
 {% endfor %}
 </table>
 </div></div></body></html>
