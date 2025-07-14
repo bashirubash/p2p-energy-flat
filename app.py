@@ -1,189 +1,61 @@
-from flask import Flask, request, redirect, url_for, session, flash, render_template_string
+from flask import Flask, render_template_string, request, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
+from web3 import Web3
 import os
 
 app = Flask(__name__)
-app.secret_key = 'secretkey'
-
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///p2p_energy.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.secret_key = 'your_secret_key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///marketplace.db'
 db = SQLAlchemy(app)
 
-ADMIN_EMAIL = "gurus@gmail.com"
-ADMIN_PASSWORD = "Guru123"
-ADMIN_WALLET = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"
+# Ethereum config (test simulation)
+w3 = Web3(Web3.HTTPProvider("https://mainnet.infura.io/v3/your_infura_project_id"))
+ADMIN_WALLET = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"  # For simulation
 
-# Models
+# Database Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(150))
-    meter_number = db.Column(db.String(100))
-    email = db.Column(db.String(150), unique=True)
-    password = db.Column(db.String(150))
-    wallet = db.Column(db.String(200))
-    kyc = db.Column(db.Boolean, default=False)
+    name = db.Column(db.String(50))
+    meter_number = db.Column(db.String(50))
+    email = db.Column(db.String(50), unique=True)
+    password = db.Column(db.String(50))
+    role = db.Column(db.String(10))  # 'buyer' or 'admin'
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    band = db.Column(db.String(50))
     amount = db.Column(db.Float)
-    status = db.Column(db.String(50), default="Available")
-
-class Transaction(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    buyer_id = db.Column(db.Integer)
-    meter_number = db.Column(db.String(100))
+    meter_number = db.Column(db.String(50))
     band = db.Column(db.String(50))
-    amount = db.Column(db.Float)
-    status = db.Column(db.String(50), default="Pending")
+    status = db.Column(db.String(20))  # 'pending', 'paid'
 
-with app.app_context():
+# Initialize DB with admin
+@app.before_request
+def setup():
     db.create_all()
+    admin = User.query.filter_by(email="gurus@gmail.com").first()
+    if not admin:
+        admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
+        db.session.add(admin)
+        db.session.commit()
 
-# Styles
+# Simple CSS style embedded in HTML
 style = """
 <style>
-body { font-family: Arial; background: #f4f6f9; padding:20px; }
-.container { max-width: 500px; margin: auto; background: white; padding:20px; border-radius:10px; box-shadow:0 0 10px #ccc; }
-h2 { text-align:center; color:#333; }
-input, select { width:100%; padding:10px; margin:5px 0; }
-button { background: #28a745; color:white; border:none; padding:10px; width:100%; margin-top:10px; }
-nav { background:#343a40; padding:10px; color:white; text-align:center; }
-a { color: white; margin:0 10px; text-decoration:none; }
-table { width:100%; border-collapse:collapse; margin-top:10px;}
-th, td { border:1px solid #ccc; padding:8px; text-align:center; }
+body {font-family: Arial; background: linear-gradient(to right, #00c6ff, #0072ff); color: white; text-align:center;}
+input {padding: 10px; margin:5px; width: 300px;}
+button {padding: 10px 20px; background: #222; color:white; border:none;}
+.sidebar {position: fixed; left:0; top:0; width:200px; height:100%; background:#111; padding-top:20px;}
+.sidebar a {display:block; padding:10px; color:white; text-decoration:none;}
+.sidebar a:hover {background:#444;}
+.content {margin-left:220px; padding:20px;}
 </style>
-"""
-
-# Templates with inline style
-index_page = style + """
-<div class="container">
-<h2>P2P Energy Marketplace</h2>
-<a href='/register'>Register</a> | <a href='/login'>Login</a>
-</div>
-"""
-
-register_page = style + """
-<div class="container">
-<h2>Register as Buyer</h2>
-<form method="post">
-<input name="name" placeholder="Full Name" required>
-<input name="meter" placeholder="Meter Number" required>
-<input name="email" type="email" placeholder="Email" required>
-<input name="password" type="password" placeholder="Password" required>
-<input name="confirm" type="password" placeholder="Confirm Password" required>
-<button type="submit">Register</button>
-</form>
-</div>
-"""
-
-login_page = style + """
-<div class="container">
-<h2>Login</h2>
-<form method="post">
-<input name="email" type="email" placeholder="Email" required>
-<input name="password" type="password" placeholder="Password" required>
-<button type="submit">Login</button>
-</form>
-</div>
-"""
-
-kyc_page = style + """
-<div class="container">
-<h2>KYC Verification</h2>
-<form method="post">
-<input name="wallet" placeholder="Enter Wallet Address" required>
-<button type="submit">Submit</button>
-</form>
-</div>
-"""
-
-dashboard_page = style + """
-<div class="container">
-<h2>Buyer Dashboard</h2>
-<p>Welcome {{user.name}} | Meter: {{user.meter_number}}</p>
-<a href="/logout">Logout</a>
-<h3>Available Units:</h3>
-<table>
-<tr><th>Band</th><th>Amount</th><th>Action</th></tr>
-{% for unit in units %}
-<tr>
-<td>{{unit.band}}</td>
-<td>{{unit.amount}}</td>
-<td><a href="/buy/{{unit.id}}">Buy</a></td>
-</tr>
-{% endfor %}
-</table>
-</div>
-"""
-
-admin_dashboard = style + """
-<nav>
-Admin Dashboard | <a href="/admin/add_unit">Add Unit</a> | <a href="/admin/pending">Pending Txns</a> | <a href="/admin/transactions">All Txns</a> | <a href="/logout">Logout</a>
-</nav>
-<div class="container">
-<h2>Listed Units</h2>
-<table>
-<tr><th>ID</th><th>Band</th><th>Amount</th><th>Status</th></tr>
-{% for u in units %}
-<tr><td>{{u.id}}</td><td>{{u.band}}</td><td>{{u.amount}}</td><td>{{u.status}}</td></tr>
-{% endfor %}
-</table>
-</div>
-"""
-
-add_unit_page = style + """
-<div class="container">
-<h2>Add Unit</h2>
-<form method="post">
-<input name="band" placeholder="Band" required>
-<input name="amount" type="number" step="any" placeholder="Amount" required>
-<button type="submit">Add</button>
-</form>
-</div>
-"""
-
-pending_txns = style + """
-<nav>
-Admin Dashboard | <a href="/admin/add_unit">Add Unit</a> | <a href="/admin/pending">Pending Txns</a> | <a href="/admin/transactions">All Txns</a> | <a href="/logout">Logout</a>
-</nav>
-<div class="container">
-<h2>Pending Transactions</h2>
-<table>
-<tr><th>ID</th><th>Buyer ID</th><th>Meter</th><th>Band</th><th>Amount</th><th>Action</th></tr>
-{% for t in txns %}
-<tr>
-<td>{{t.id}}</td><td>{{t.buyer_id}}</td><td>{{t.meter_number}}</td><td>{{t.band}}</td><td>{{t.amount}}</td>
-<td><a href="/admin/approve/{{t.id}}">Approve</a></td>
-</tr>
-{% endfor %}
-</table>
-</div>
-"""
-
-all_txns = style + """
-<nav>
-Admin Dashboard | <a href="/admin/add_unit">Add Unit</a> | <a href="/admin/pending">Pending Txns</a> | <a href="/admin/transactions">All Txns</a> | <a href="/logout">Logout</a>
-</nav>
-<div class="container">
-<h2>All Transactions</h2>
-<table>
-<tr><th>ID</th><th>Buyer ID</th><th>Meter</th><th>Band</th><th>Amount</th><th>Status</th></tr>
-{% for t in txns %}
-<tr>
-<td>{{t.id}}</td><td>{{t.buyer_id}}</td><td>{{t.meter_number}}</td><td>{{t.band}}</td><td>{{t.amount}}</td><td>{{t.status}}</td>
-</tr>
-{% endfor %}
-</table>
-</div>
 """
 
 # Routes
 
 @app.route('/')
-def index():
-    return render_template_string(index_page)
+def home():
+    return redirect('/login')
 
 @app.route('/register', methods=['GET','POST'])
 def register():
@@ -194,96 +66,182 @@ def register():
         password = request.form['password']
         confirm = request.form['confirm']
         if password != confirm:
-            return "Password Mismatch!"
-        hashed = generate_password_hash(password)
-        user = User(name=name, meter_number=meter, email=email, password=hashed)
+            return "Passwords do not match!"
+        user = User(name=name, meter_number=meter, email=email, password=password, role="buyer")
         db.session.add(user)
         db.session.commit()
         return redirect('/login')
-    return render_template_string(register_page)
+    return render_template_string(style + """
+    <h2>P2P Energy Market Registration</h2>
+    <form method="post">
+    <input name="name" placeholder="Full Name"><br>
+    <input name="meter" placeholder="Meter Number"><br>
+    <input name="email" placeholder="Email"><br>
+    <input type="password" name="password" placeholder="Password"><br>
+    <input type="password" name="confirm" placeholder="Confirm Password"><br>
+    <button type="submit">Register</button>
+    </form>
+    """)
 
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
-        if email == ADMIN_EMAIL and password == ADMIN_PASSWORD:
-            session['admin']=True
-            return redirect('/admin/dashboard')
-        user = User.query.filter_by(email=email).first()
-        if user and check_password_hash(user.password, password):
-            session['user'] = user.id
-            return redirect('/kyc')
-        return "Invalid Credentials"
-    return render_template_string(login_page)
-
-@app.route('/kyc', methods=['GET','POST'])
-def kyc():
-    user = User.query.get(session['user'])
-    if request.method == 'POST':
-        user.wallet = request.form['wallet']
-        user.kyc = True
-        db.session.commit()
-        return redirect('/dashboard')
-    return render_template_string(kyc_page)
+        user = User.query.filter_by(email=email, password=password).first()
+        if user:
+            session['user'] = user.email
+            session['role'] = user.role
+            return redirect('/dashboard')
+        return "Invalid credentials!"
+    return render_template_string(style + """
+    <h2>P2P Energy Market Login</h2>
+    <form method="post">
+    <input name="email" placeholder="Email"><br>
+    <input type="password" name="password" placeholder="Password"><br>
+    <button type="submit">Login</button>
+    </form>
+    """)
 
 @app.route('/dashboard')
 def dashboard():
-    user = User.query.get(session['user'])
-    units = Unit.query.filter_by(status="Available").all()
-    return render_template_string(dashboard_page, user=user, units=units)
+    if 'user' not in session:
+        return redirect('/login')
+    if session['role'] == 'admin':
+        return redirect('/admin')
+    units = Unit.query.filter_by(status='paid').all()
+    pending = Unit.query.filter_by(status='pending').all()
+    return render_template_string(style + """
+    <h2>Welcome {{name}} | Meter: {{meter}}</h2>
+    <h3>Available Units</h3>
+    {% for u in units %}
+        <form method="post" action="/buy/{{u.id}}">
+        Band: {{u.band}} | Amount: {{u.amount}}<br>
+        <button type="submit">Buy & Pay with Metamask</button><br><br>
+        </form>
+    {% endfor %}
+    """, name=User.query.filter_by(email=session['user']).first().name,
+       meter=User.query.filter_by(email=session['user']).first().meter_number,
+       units=units)
 
-@app.route('/buy/<int:id>')
-def buy(id):
-    unit = Unit.query.get(id)
-    user = User.query.get(session['user'])
-    txn = Transaction(buyer_id=user.id, meter_number=user.meter_number, band=unit.band, amount=unit.amount)
-    db.session.add(txn)
-    unit.status = "Pending"
+@app.route('/buy/<int:unit_id>', methods=['POST'])
+def buy(unit_id):
+    if 'user' not in session:
+        return redirect('/login')
+    unit = Unit.query.get(unit_id)
+    unit.status = 'pending'
+    unit.meter_number = User.query.filter_by(email=session['user']).first().meter_number
     db.session.commit()
-    return f"Order placed for {unit.amount} of {unit.band} to {user.meter_number}. Awaiting admin release."
+    return render_template_string(style + f"""
+    <h2>Payment Initiated</h2>
+    Please send ETH equivalent to {unit.amount} to <b>{ADMIN_WALLET}</b> using your Metamask.<br><br>
+    <i>After admin verifies, units will be added to your meter {unit.meter_number}.</i><br><br>
+    <a href="/dashboard">Back to Dashboard</a>
+    """)
 
-@app.route('/admin/dashboard')
-def admin_dash():
-    units = Unit.query.all()
-    return render_template_string(admin_dashboard, units=units)
+# Admin Section
 
-@app.route('/admin/add_unit', methods=['GET','POST'])
+@app.route('/admin')
+def admin():
+    if 'user' not in session or session['role'] != 'admin':
+        return redirect('/login')
+    return render_template_string(style + """
+    <div class="sidebar">
+    <a href="/add_unit">Add Listing</a>
+    <a href="/pending">Pending Transactions</a>
+    <a href="/complete">Completed Transactions</a>
+    <a href="/logout">Logout</a>
+    </div>
+    <div class="content">
+    <h2>Admin Dashboard</h2>
+    <p>Select an action from the side menu.</p>
+    </div>
+    """)
+
+@app.route('/add_unit', methods=['GET','POST'])
 def add_unit():
-    if request.method=='POST':
-        band = request.form['band']
+    if 'user' not in session or session['role'] != 'admin':
+        return redirect('/login')
+    if request.method == 'POST':
         amount = request.form['amount']
-        unit = Unit(band=band, amount=amount)
-        db.session.add(unit)
+        band = request.form['band']
+        u = Unit(amount=amount, band=band, status='paid')
+        db.session.add(u)
         db.session.commit()
-        return redirect('/admin/dashboard')
-    return render_template_string(add_unit_page)
+        return redirect('/admin')
+    return render_template_string(style + """
+    <div class="sidebar">
+    <a href="/add_unit">Add Listing</a>
+    <a href="/pending">Pending Transactions</a>
+    <a href="/complete">Completed Transactions</a>
+    <a href="/logout">Logout</a>
+    </div>
+    <div class="content">
+    <h2>Add New Unit</h2>
+    <form method="post">
+    <input name="amount" placeholder="Unit Amount"><br>
+    <input name="band" placeholder="Band"><br>
+    <button type="submit">Add Unit</button>
+    </form>
+    </div>
+    """)
 
-@app.route('/admin/pending')
+@app.route('/pending')
 def pending():
-    txns = Transaction.query.filter_by(status="Pending").all()
-    return render_template_string(pending_txns, txns=txns)
+    if 'user' not in session or session['role'] != 'admin':
+        return redirect('/login')
+    pendings = Unit.query.filter_by(status='pending').all()
+    return render_template_string(style + """
+    <div class="sidebar">
+    <a href="/add_unit">Add Listing</a>
+    <a href="/pending">Pending Transactions</a>
+    <a href="/complete">Completed Transactions</a>
+    <a href="/logout">Logout</a>
+    </div>
+    <div class="content">
+    <h2>Pending Transactions</h2>
+    {% for p in pendings %}
+        Meter: {{p.meter_number}} | Band: {{p.band}} | Amount: {{p.amount}} <br>
+        <form method="post" action="/release/{{p.id}}">
+        <button type="submit">Mark as Paid & Release Unit</button><br><br>
+        </form>
+    {% endfor %}
+    </div>
+    """, pendings=pendings)
 
-@app.route('/admin/transactions')
-def transactions():
-    txns = Transaction.query.all()
-    return render_template_string(all_txns, txns=txns)
-
-@app.route('/admin/approve/<int:id>')
-def approve(id):
-    txn = Transaction.query.get(id)
-    txn.status = "Completed"
-    unit = Unit.query.filter_by(band=txn.band, amount=txn.amount).first()
-    if unit:
-        unit.status="Sold"
+@app.route('/release/<int:uid>', methods=['POST'])
+def release(uid):
+    unit = Unit.query.get(uid)
+    unit.status = 'paid'
     db.session.commit()
-    return f"Released {txn.amount} of {txn.band} to meter {txn.meter_number}."
+    return redirect('/pending')
+
+@app.route('/complete')
+def complete():
+    if 'user' not in session or session['role'] != 'admin':
+        return redirect('/login')
+    units = Unit.query.filter_by(status='paid').all()
+    return render_template_string(style + """
+    <div class="sidebar">
+    <a href="/add_unit">Add Listing</a>
+    <a href="/pending">Pending Transactions</a>
+    <a href="/complete">Completed Transactions</a>
+    <a href="/logout">Logout</a>
+    </div>
+    <div class="content">
+    <h2>Completed Transactions</h2>
+    {% for u in units %}
+        Meter: {{u.meter_number}} | Band: {{u.band}} | Amount: {{u.amount}} <br>
+    {% endfor %}
+    </div>
+    """, units=units)
 
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect('/')
+    return redirect('/login')
 
-# Run
-if __name__=="__main__":
-    app.run(debug=True)
+# Run App
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
