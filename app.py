@@ -1,13 +1,12 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, url_for
+from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
-import os
 
 app = Flask(__name__)
 app.secret_key = 'yedc_secret'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market.db'
 db = SQLAlchemy(app)
 
-# ---- Models ----
+# Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
@@ -32,7 +31,7 @@ class Transaction(db.Model):
     band = db.Column(db.String(10))
     status = db.Column(db.String(20), default="Pending")
 
-# ---- Initialize DB ----
+# Initialize DB
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(email="gurus@gmail.com").first():
@@ -42,7 +41,6 @@ with app.app_context():
             db.session.add(Unit(units=1, price_eth=0.0005, band="D"))
         db.session.commit()
 
-# ---- Routes ----
 @app.route('/')
 def home():
     return redirect('/login')
@@ -90,28 +88,29 @@ def dashboard():
 
     units = Unit.query.all()
     transactions = Transaction.query.filter_by(buyer_email=session['user']).all()
-    return render_template_string(buyer_dashboard_html, units=units, transactions=transactions, role=session['role'], meter=session['meter'])
+    return render_template_string(buyer_dashboard_html, units=units, transactions=transactions, meter=session['meter'])
 
 @app.route('/buy/<int:unit_id>')
 def buy(unit_id):
     if session.get('role') != 'buyer':
         return redirect('/dashboard')
     unit = Unit.query.get(unit_id)
-    if unit.status == 'Sold':
-        flash('Already sold')
+    if unit.status != 'Available':
+        flash('Unit not available')
     else:
-        tx = Transaction(buyer_email=session['user'], meter_number=session['meter'], unit_id=unit.id, amount_eth=unit.price_eth, band=unit.band, status="Pending")
+        tx = Transaction(buyer_email=session['user'], meter_number=session['meter'], unit_id=unit.id, amount_eth=unit.price_eth, band=unit.band)
         unit.status = 'Pending'
         db.session.add(tx)
         db.session.commit()
-        flash('Purchase initiated. Wait for admin approval after ETH payment.')
+        flash('Payment sent. Waiting for admin approval.')
     return redirect('/dashboard')
 
 @app.route('/admin')
 def admin():
     if session.get('role') != 'admin':
         return redirect('/dashboard')
-    return render_template_string(admin_dashboard_html)
+    units = Unit.query.all()
+    return render_template_string(admin_dashboard_html, units=units)
 
 @app.route('/admin/add_unit', methods=['POST'])
 def add_unit():
@@ -127,27 +126,21 @@ def add_unit():
 
 @app.route('/admin/pending')
 def admin_pending():
-    if session.get('role') != 'admin':
-        return redirect('/dashboard')
     txs = Transaction.query.filter_by(status="Pending").all()
     return render_template_string(admin_pending_html, txs=txs)
 
 @app.route('/admin/approve/<int:txid>')
 def approve(txid):
-    if session.get('role') != 'admin':
-        return redirect('/dashboard')
     tx = Transaction.query.get(txid)
     unit = Unit.query.get(tx.unit_id)
     tx.status = "Paid"
     unit.status = "Sold"
     db.session.commit()
-    flash(f"Transaction approved: {tx.amount_eth} ETH added to meter {tx.meter_number}")
+    flash(f"Approved: {tx.amount_eth} ETH - Meter {tx.meter_number}")
     return redirect('/admin/pending')
 
 @app.route('/admin/completed')
 def completed():
-    if session.get('role') != 'admin':
-        return redirect('/dashboard')
     txs = Transaction.query.filter_by(status="Paid").all()
     return render_template_string(admin_completed_html, txs=txs)
 
@@ -156,7 +149,7 @@ def logout():
     session.clear()
     return redirect('/login')
 
-# ---- HTML Templates ----
+# ---- HTML ----
 register_html = """
 <!DOCTYPE html><html><head><title>Register - YEDC</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -184,102 +177,96 @@ login_html = """
 """
 
 buyer_dashboard_html = """
-<!DOCTYPE html><html><head><title>Dashboard</title>
+<!DOCTYPE html><html><head><title>Buyer Dashboard</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
-<body class="p-4"><div class="container">
+<body><div class="container p-4">
 <h3>YEDC Buyer Dashboard</h3><p>Meter: {{ meter }}</p>
 {% with messages = get_flashed_messages() %}
 {% if messages %}<div class="alert alert-success">{{ messages[0] }}</div>{% endif %}{% endwith %}
-
 <table class="table table-bordered mt-4">
 <tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>
-{% if u.status == 'Available' %}
-<button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
-{% else %}-{% endif %}
-</td></tr>
+<td>{% if u.status == 'Available' %}
+<button onclick="buy('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
+{% else %}-{% endif %}</td></tr>
 {% endfor %}
 </table>
-
-<h5 class="mt-5">Your Transactions</h5>
-<table class="table table-bordered">
-<tr><th>Unit ID</th><th>Amount</th><th>Status</th></tr>
-{% for t in transactions %}
-<tr><td>{{ t.unit_id }}</td><td>{{ t.amount_eth }}</td><td>{{ t.status }}</td></tr>
-{% endfor %}
-</table>
-
-<a href="/logout" class="btn btn-danger mt-3">Logout</a>
-</div>
-
 <script>
-async function buyUnit(id, price) {
-if (typeof window.ethereum !== 'undefined') {
-    const web3 = new Web3(window.ethereum);
-    await window.ethereum.request({ method: 'eth_requestAccounts' });
-    const accounts = await web3.eth.getAccounts();
-    const seller = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b";
-    await web3.eth.sendTransaction({
-        from: accounts[0],
-        to: seller,
-        value: web3.utils.toWei(price, 'ether')
-    });
-    window.location.href = "/buy/" + id;
-} else {
-    alert("MetaMask not detected");
-}
+async function buy(id, price){
+    if(window.ethereum){
+        const web3 = new Web3(window.ethereum);
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const accounts = await web3.eth.getAccounts();
+        await web3.eth.sendTransaction({
+            from: accounts[0],
+            to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
+            value: web3.utils.toWei(price, 'ether')
+        });
+        window.location.href='/buy/'+id;
+    }else{
+        alert('Metamask not detected');
+    }
 }
 </script>
-</body></html>
+<a href="/logout" class="btn btn-danger mt-3">Logout</a>
+</div></body></html>
 """
 
 admin_dashboard_html = """
 <!DOCTYPE html><html><head><title>Admin Dashboard</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="p-4"><div class="container">
-<h3>Admin Dashboard</h3>
-<a href="/admin/pending" class="btn btn-warning mb-2">Pending Transactions</a>
-<a href="/admin/completed" class="btn btn-success mb-2">Completed Transactions</a>
-<form method="POST" action="/admin/add_unit" class="my-3 row">
+<body><div class="d-flex">
+<div class="bg-dark p-3" style="width:200px; height:100vh;">
+<h5 class="text-white">Admin Panel</h5>
+<ul class="nav flex-column">
+<li><a href="/admin" class="nav-link text-white">View Units</a></li>
+<li><a href="/admin/pending" class="nav-link text-white">Pending Tx</a></li>
+<li><a href="/admin/completed" class="nav-link text-white">Completed Tx</a></li>
+<li><a href="/logout" class="nav-link text-white">Logout</a></li>
+</ul>
+</div>
+<div class="p-4 w-100">
+<h3>Units Listed</h3>
+<form method="POST" action="/admin/add_unit" class="row mb-4">
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
-<div class="col">
-<select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select>
-</div><div class="col"><button class="btn btn-primary">Add Unit</button></div></form>
-<a href="/logout" class="btn btn-danger">Logout</a>
-</div></body></html>
+<div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+<div class="col"><button class="btn btn-primary">Add</button></div></form>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Band</th><th>Status</th></tr>
+{% for u in units %}
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td></tr>
+{% endfor %}
+</table>
+</div></div></body></html>
 """
 
 admin_pending_html = """
 <!DOCTYPE html><html><head><title>Pending</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="p-4"><div class="container"><h3>Pending Transactions</h3>
+<body><div class="container p-4"><h3>Pending Transactions</h3>
 <table class="table table-bordered">
 <tr><th>ID</th><th>Buyer</th><th>Meter</th><th>Unit</th><th>Amount</th><th>Action</th></tr>
 {% for t in txs %}
 <tr><td>{{t.id}}</td><td>{{t.buyer_email}}</td><td>{{t.meter_number}}</td><td>{{t.unit_id}}</td><td>{{t.amount_eth}}</td>
-<td><a href="/admin/approve/{{t.id}}" class="btn btn-success btn-sm">Mark Paid</a></td></tr>
+<td><a href="/admin/approve/{{t.id}}" class="btn btn-success btn-sm">Approve</a></td></tr>
 {% endfor %}
-</table>
-<a href="/admin" class="btn btn-secondary">Back</a></div></body></html>
+</table><a href="/admin" class="btn btn-secondary">Back</a></div></body></html>
 """
 
 admin_completed_html = """
 <!DOCTYPE html><html><head><title>Completed</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="p-4"><div class="container"><h3>Completed Transactions</h3>
+<body><div class="container p-4"><h3>Completed Transactions</h3>
 <table class="table table-bordered">
 <tr><th>ID</th><th>Buyer</th><th>Meter</th><th>Unit</th><th>Amount</th></tr>
 {% for t in txs %}
 <tr><td>{{t.id}}</td><td>{{t.buyer_email}}</td><td>{{t.meter_number}}</td><td>{{t.unit_id}}</td><td>{{t.amount_eth}}</td></tr>
 {% endfor %}
-</table>
-<a href="/admin" class="btn btn-secondary">Back</a></div></body></html>
+</table><a href="/admin" class="btn btn-secondary">Back</a></div></body></html>
 """
 
-# ---- Run ----
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
