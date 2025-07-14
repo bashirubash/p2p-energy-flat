@@ -1,11 +1,7 @@
 services:
   - type: web
-    name: p2p-energy-flat
+    name: p2p-energy
     env: python
-    buildCommand: pip install --no-cache-dir --prefer-binary -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: python app.py
-    envVars:
-      - key: FLASK_ENV
-        value: production
-      - key: PORT
-        value: 10000
+    region: oregon
