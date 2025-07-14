@@ -23,9 +23,8 @@ class Unit(db.Model):
     band = db.Column(db.String(10))
     status = db.Column(db.String(20), default="Available")
 
-# ---- Create tables & seed ----
-@app.before_first_request
-def setup():
+# ---- Initialize DB ----
+with app.app_context():
     db.create_all()
     if not User.query.filter_by(email="gurus@gmail.com").first():
         admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
@@ -102,7 +101,7 @@ def buy(unit_id):
     else:
         unit.status = 'Sold'
         db.session.commit()
-        flash('Transaction completed. Recharge will be processed.')
+        flash('Transaction completed. Recharge will be processed to meter: ' + session['meter'])
     return redirect('/dashboard')
 
 @app.route('/logout')
@@ -178,7 +177,7 @@ if (typeof window.ethereum !== 'undefined') {
     const web3 = new Web3(window.ethereum);
     await window.ethereum.request({ method: 'eth_requestAccounts' });
     const accounts = await web3.eth.getAccounts();
-    const seller = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"; // Replace with real wallet
+    const seller = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"; // Replace with actual seller wallet address
     await web3.eth.sendTransaction({
         from: accounts[0],
         to: seller,
