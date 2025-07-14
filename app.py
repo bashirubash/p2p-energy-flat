@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, url_for, render_template_string, session
+from flask import Flask, request, redirect, url_for, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from web3 import Web3
@@ -6,7 +6,6 @@ import json
 import os
 from dotenv import load_dotenv
 
-# Flask setup
 app = Flask(__name__)
 app.secret_key = "your_secret_key_here"
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
@@ -14,10 +13,8 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login"
 
-# Load environment
 load_dotenv()
 
-# Web3 setup
 INFURA_URL = os.getenv("INFURA_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 PUBLIC_KEY = os.getenv("PUBLIC_KEY")
@@ -30,9 +27,9 @@ with open("EnergyMarketplaceABI.json") as abi_file:
 
 contract = web3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=contract_abi)
 
-# User Model
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(150))
     email = db.Column(db.String(150), unique=True, nullable=False)
     password = db.Column(db.String(150), nullable=False)
     meter_number = db.Column(db.String(50))
@@ -43,33 +40,51 @@ def load_user(user_id):
 
 # -------------------- ROUTES --------------------
 
-# Home Page
 @app.route('/')
 def index():
     if current_user.is_authenticated:
         return redirect(url_for('dashboard'))
     return redirect(url_for('login'))
 
-# Registration
+# Register
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
+        name = request.form['name']
+        meter_number = request.form['meter_number']
         email = request.form['email']
         password = request.form['password']
+        confirm_password = request.form['confirm_password']
+        if password != confirm_password:
+            return "Passwords do not match."
         if User.query.filter_by(email=email).first():
             return "Email already registered."
-        new_user = User(email=email, password=password)
+        new_user = User(name=name, meter_number=meter_number, email=email, password=password)
         db.session.add(new_user)
         db.session.commit()
         return redirect(url_for('login'))
+
     return render_template_string('''
-        <h2>Register</h2>
-        <form method="post">
-            <input name="email" placeholder="Email" required>
-            <input name="password" type="password" placeholder="Password" required>
-            <button type="submit">Register</button>
-        </form>
-        <p>Already have an account? <a href="/login">Login</a></p>
+    <html><head><title>YEDC Registration</title>
+    <style>
+    body {font-family: Arial; background:#f5f7fa; display:flex; justify-content:center; align-items:center; height:100vh;}
+    form {background:#fff; padding:30px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);}
+    h2 {text-align:center; color:#2c3e50;}
+    input {width:100%; padding:10px; margin:8px 0; border-radius:5px; border:1px solid #ccc;}
+    button {width:100%; padding:10px; background:#3498db; color:#fff; border:none; border-radius:5px;}
+    button:hover {background:#2980b9;}
+    </style></head><body>
+    <form method="post">
+        <h2>YEDC P2P Energy - Register</h2>
+        <input name="name" placeholder="Full Name" required>
+        <input name="meter_number" placeholder="Meter Number" required>
+        <input name="email" placeholder="Email" required>
+        <input name="password" type="password" placeholder="Password" required>
+        <input name="confirm_password" type="password" placeholder="Confirm Password" required>
+        <button type="submit">Register</button>
+        <p style="text-align:center;margin-top:10px;">Already have account? <a href="/login">Login</a></p>
+    </form>
+    </body></html>
     ''')
 
 # Login
@@ -84,40 +99,32 @@ def login():
             return redirect(url_for('dashboard'))
         else:
             return "Invalid credentials."
+
     return render_template_string('''
-        <h2>Login</h2>
-        <form method="post">
-            <input name="email" placeholder="Email" required>
-            <input name="password" type="password" placeholder="Password" required>
-            <button type="submit">Login</button>
-        </form>
-        <p>No account? <a href="/register">Register</a></p>
+    <html><head><title>YEDC Login</title>
+    <style>
+    body {font-family: Arial; background:#f5f7fa; display:flex; justify-content:center; align-items:center; height:100vh;}
+    form {background:#fff; padding:30px; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);}
+    h2 {text-align:center; color:#2c3e50;}
+    input {width:100%; padding:10px; margin:8px 0; border-radius:5px; border:1px solid #ccc;}
+    button {width:100%; padding:10px; background:#3498db; color:#fff; border:none; border-radius:5px;}
+    button:hover {background:#2980b9;}
+    </style></head><body>
+    <form method="post">
+        <h2>YEDC P2P Energy - Login</h2>
+        <input name="email" placeholder="Email" required>
+        <input name="password" type="password" placeholder="Password" required>
+        <button type="submit">Login</button>
+        <p style="text-align:center;margin-top:10px;">No account? <a href="/register">Register</a></p>
+    </form>
+    </body></html>
     ''')
 
-# Logout
 @app.route('/logout')
 @login_required
 def logout():
     logout_user()
     return redirect(url_for('login'))
-
-# KYC Update
-@app.route('/kyc', methods=['GET', 'POST'])
-@login_required
-def kyc():
-    if request.method == 'POST':
-        meter_number = request.form['meter_number']
-        current_user.meter_number = meter_number
-        db.session.commit()
-        return redirect(url_for('dashboard'))
-    return render_template_string('''
-        <h2>KYC Update</h2>
-        <form method="post">
-            <input name="meter_number" placeholder="Meter Number" required>
-            <button type="submit">Submit</button>
-        </form>
-        <p><a href="/dashboard">Back to Dashboard</a></p>
-    ''')
 
 # Dashboard
 @app.route('/dashboard')
@@ -139,40 +146,44 @@ def dashboard():
             break
 
     return render_template_string('''
-        <h1>YEDC P2P Energy Marketplace Dashboard</h1>
-        <p>Welcome: {{email}}</p>
-        <p>Your Meter: {{meter}}</p>
-        <p><a href="/logout">Logout</a> | <a href="/kyc">KYC Update</a></p>
+    <html><head><title>YEDC Dashboard</title>
+    <style>
+    body {font-family: Arial; background:#f5f7fa; padding:20px;}
+    h1 {color:#2c3e50;}
+    table {width:100%; border-collapse:collapse; margin-top:20px;}
+    th, td {border:1px solid #ccc; padding:10px; text-align:center;}
+    th {background:#34495e; color:#fff;}
+    a {text-decoration:none; color:#3498db;}
+    button {padding:10px; background:#3498db; color:#fff; border:none; border-radius:5px;}
+    </style></head><body>
+    <h1>Welcome to YEDC P2P Energy Marketplace</h1>
+    <p>Logged in as: {{current_user.name}} | Meter: {{current_user.meter_number}}</p>
+    <p><a href="/logout">Logout</a></p>
 
-        <h2>Seller Section</h2>
-        <form method="POST" action="/offer">
-            <input type="number" name="energy" placeholder="Energy (kWh)" required>
-            <input type="number" step="0.01" name="price" placeholder="Price (ETH)" required>
-            <button type="submit">List Energy</button>
-        </form>
+    <h2>Seller Section - List Energy</h2>
+    <form method="POST" action="/offer">
+        <input type="number" name="energy" placeholder="Energy (kWh)" required>
+        <input type="number" step="0.01" name="price" placeholder="Price (ETH)" required>
+        <button type="submit">List Energy</button>
+    </form>
 
-        <h2>Buyer Section</h2>
-        <table border="1">
-            <tr><th>ID</th><th>Seller</th><th>Buyer</th><th>Energy</th><th>Price</th><th>Status</th><th>Action</th></tr>
-            {% for t in trades %}
-            <tr>
-                <td>{{t.id}}</td>
-                <td>{{t.seller}}</td>
-                <td>{{t.buyer}}</td>
-                <td>{{t.energy}}</td>
-                <td>{{t.price}}</td>
-                <td>{{'Completed' if t.completed else 'Open'}}</td>
-                <td>
-                    {% if not t.completed %}
-                        <a href="/buy/{{t.id}}/{{t.price}}">Buy</a>
-                    {% else %}
-                        -
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </table>
-    ''', trades=trade_data, email=current_user.email, meter=current_user.meter_number)
+    <h2>Buyer Section - Available Listings</h2>
+    <table>
+        <tr><th>ID</th><th>Seller</th><th>Buyer</th><th>Energy</th><th>Price (ETH)</th><th>Status</th><th>Action</th></tr>
+        {% for t in trades %}
+        <tr>
+            <td>{{t.id}}</td>
+            <td>{{t.seller}}</td>
+            <td>{{t.buyer}}</td>
+            <td>{{t.energy}}</td>
+            <td>{{t.price}}</td>
+            <td>{{'Completed' if t.completed else 'Open'}}</td>
+            <td>{% if not t.completed %}<a href="/buy/{{t.id}}/{{t.price}}">Buy</a>{% else %}-{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    </body></html>
+    ''', trades=trade_data, current_user=current_user)
 
 # Seller Offer
 @app.route('/offer', methods=['POST'])
@@ -215,7 +226,7 @@ def buy(trade_id, price):
 
     return redirect(url_for('dashboard'))
 
-# -------------------- MAIN --------------------
+# Main
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
