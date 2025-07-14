@@ -1,61 +1,86 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, url_for
+from flask import Flask, render_template_string, request, redirect, url_for, session, flash
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+from web3 import Web3
 import os
 
 app = Flask(__name__)
-app.secret_key = 'yedc_secret'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market.db'
+app.secret_key = 'secretkey'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///marketplace.db'
 db = SQLAlchemy(app)
 
-# ---- Models ----
+# Ethereum setup (replace with your real values)
+ETH_PROVIDER = "https://mainnet.infura.io/v3/YOUR_INFURA_KEY"
+ADMIN_WALLET = "0xYourAdminWalletAddress"
+
+web3 = Web3(Web3.HTTPProvider(ETH_PROVIDER))
+
+# Database Models
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
-    meter_number = db.Column(db.String(100))
-    email = db.Column(db.String(100), unique=True)
-    password = db.Column(db.String(100))
-    role = db.Column(db.String(10))  # admin or buyer
+    email = db.Column(db.String(150), unique=True)
+    password = db.Column(db.String(200))
+    meter_number = db.Column(db.String(50))
+    role = db.Column(db.String(50), default='buyer')  # 'buyer' or 'admin'
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     units = db.Column(db.Integer)
     price_eth = db.Column(db.Float)
-    band = db.Column(db.String(10))
-    status = db.Column(db.String(20), default="Available")
+    band = db.Column(db.String(20))
 
-# ---- Initialize DB ----
-with app.app_context():
+class Order(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    buyer_email = db.Column(db.String(150))
+    meter_number = db.Column(db.String(50))
+    units = db.Column(db.Integer)
+    amount_eth = db.Column(db.Float)
+    band = db.Column(db.String(20))
+    status = db.Column(db.String(50), default="pending")  # pending, paid
+
+# Auto Create Admin and Sample Data
+@app.before_first_request
+def create_tables():
     db.create_all()
-    if not User.query.filter_by(email="gurus@gmail.com").first():
-        admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
-        db.session.add(admin)
-        for i in range(50):
-            db.session.add(Unit(units=1, price_eth=0.0005, band="D"))
+    admin = User.query.filter_by(email="gurus@gmail.com").first()
+    if not admin:
+        admin_user = User(
+            name="Guru Admin",
+            email="gurus@gmail.com",
+            password=generate_password_hash("Guru123"),
+            meter_number="admin",
+            role="admin"
+        )
+        db.session.add(admin_user)
+        # Sample Listings
+        for i in range(1, 51):
+            sample_unit = Unit(units=10+i, price_eth=0.001*i, band="Band A")
+            db.session.add(sample_unit)
         db.session.commit()
 
-# ---- Routes ----
+# Routes
 @app.route('/')
 def home():
-    return redirect('/login')
+    return redirect(url_for('login'))
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         name = request.form['name']
-        meter = request.form['meter']
+        meter_number = request.form['meter']
         email = request.form['email']
         password = request.form['password']
         confirm = request.form['confirm']
         if password != confirm:
-            flash('Passwords do not match')
-            return redirect('/register')
-        if User.query.filter_by(email=email).first():
-            flash('Email already registered')
-            return redirect('/register')
-        db.session.add(User(name=name, meter_number=meter, email=email, password=password, role='buyer'))
+            flash("Passwords do not match")
+            return redirect(url_for('register'))
+        hashed_pw = generate_password_hash(password)
+        new_user = User(name=name, email=email, password=hashed_pw, meter_number=meter_number)
+        db.session.add(new_user)
         db.session.commit()
-        flash('Registered successfully. Please log in.')
-        return redirect('/login')
+        flash("Registration successful. Please login.")
+        return redirect(url_for('login'))
     return render_template_string(register_html)
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -63,135 +88,140 @@ def login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
-        user = User.query.filter_by(email=email, password=password).first()
-        if user:
+        user = User.query.filter_by(email=email).first()
+        if user and check_password_hash(user.password, password):
             session['user'] = user.email
             session['role'] = user.role
-            session['meter'] = user.meter_number
-            return redirect('/dashboard')
-        flash('Invalid credentials')
+            if user.role == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            else:
+                return redirect(url_for('buyer_dashboard'))
+        else:
+            flash("Invalid credentials")
+            return redirect(url_for('login'))
     return render_template_string(login_html)
-
-@app.route('/dashboard')
-def dashboard():
-    if 'user' not in session:
-        return redirect('/login')
-    units = Unit.query.all()
-    return render_template_string(dashboard_html, units=units, role=session['role'], meter=session['meter'])
-
-@app.route('/add_unit', methods=['POST'])
-def add_unit():
-    if session.get('role') != 'admin':
-        return redirect('/dashboard')
-    units = int(request.form['units'])
-    price = float(request.form['price'])
-    band = request.form['band']
-    db.session.add(Unit(units=units, price_eth=price, band=band))
-    db.session.commit()
-    flash('Unit listed successfully')
-    return redirect('/dashboard')
-
-@app.route('/buy/<int:unit_id>')
-def buy(unit_id):
-    if session.get('role') != 'buyer':
-        return redirect('/dashboard')
-    unit = Unit.query.get(unit_id)
-    if unit.status == 'Sold':
-        flash('Already sold')
-    else:
-        unit.status = 'Sold'
-        db.session.commit()
-        flash('Transaction completed. Recharge will be processed to meter: ' + session['meter'])
-    return redirect('/dashboard')
 
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect('/login')
+    return redirect(url_for('login'))
 
-# ---- HTML Templates ----
+# Buyer Dashboard
+@app.route('/buyer')
+def buyer_dashboard():
+    if 'user' not in session or session['role'] != 'buyer':
+        return redirect(url_for('login'))
+    units = Unit.query.all()
+    return render_template_string(buyer_html, units=units)
+
+@app.route('/buy/<int:unit_id>')
+def buy_unit(unit_id):
+    if 'user' not in session or session['role'] != 'buyer':
+        return redirect(url_for('login'))
+    unit = Unit.query.get(unit_id)
+    user = User.query.filter_by(email=session['user']).first()
+    new_order = Order(
+        buyer_email=user.email,
+        meter_number=user.meter_number,
+        units=unit.units,
+        amount_eth=unit.price_eth,
+        band=unit.band,
+        status="pending"
+    )
+    db.session.add(new_order)
+    db.session.commit()
+    flash(f"Order placed for {unit.units} units. Awaiting admin approval.")
+    return redirect(url_for('buyer_dashboard'))
+
+# Admin Dashboard
+@app.route('/admin')
+def admin_dashboard():
+    if 'user' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    return render_template_string(admin_html)
+
+@app.route('/admin/add', methods=['GET', 'POST'])
+def add_listing():
+    if request.method == 'POST':
+        units = request.form['units']
+        price = request.form['price']
+        band = request.form['band']
+        new_unit = Unit(units=units, price_eth=price, band=band)
+        db.session.add(new_unit)
+        db.session.commit()
+        flash("Listing added successfully.")
+    return render_template_string(add_listing_html)
+
+@app.route('/admin/pending')
+def pending_orders():
+    orders = Order.query.filter_by(status="pending").all()
+    return render_template_string(pending_html, orders=orders)
+
+@app.route('/admin/complete')
+def complete_orders():
+    orders = Order.query.filter_by(status="paid").all()
+    return render_template_string(complete_html, orders=orders)
+
+@app.route('/admin/mark_paid/<int:order_id>')
+def mark_paid(order_id):
+    order = Order.query.get(order_id)
+    order.status = "paid"
+    db.session.commit()
+    flash(f"Meter {order.meter_number} recharged with {order.units} units (Band: {order.band})")
+    return redirect(url_for('pending_orders'))
+
+# Templates (simplified inline HTML with basic styling)
 register_html = """
-<!DOCTYPE html><html><head><title>Register - YEDC</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light p-5">
-<div class="container"><h2 class="text-center">YEDC Registration</h2>
-<form method="POST" class="mt-4">
-<input name="name" class="form-control mb-2" placeholder="Name" required>
-<input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
-<input name="email" class="form-control mb-2" placeholder="Email" required>
-<input name="password" class="form-control mb-2" type="password" placeholder="Password" required>
-<input name="confirm" class="form-control mb-3" type="password" placeholder="Confirm Password" required>
-<button type="submit" class="btn btn-primary w-100">Register</button>
-</form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div></body></html>
+<!DOCTYPE html><html><head><style>body{font-family:Arial;background:#f5f5f5;padding:50px}form{background:#fff;padding:20px;border-radius:10px;max-width:300px;margin:auto;box-shadow:0 0 10px #ccc}input{margin:5px 0;padding:10px;width:100%}</style></head><body>
+<h2 style='text-align:center;'>YEDC Energy Marketplace</h2><form method="POST">
+<input name="name" placeholder="Name" required>
+<input name="meter" placeholder="Meter Number" required>
+<input name="email" placeholder="Email" required>
+<input name="password" type="password" placeholder="Password" required>
+<input name="confirm" type="password" placeholder="Confirm Password" required>
+<button type="submit">Register</button></form></body></html>
 """
 
 login_html = """
-<!DOCTYPE html><html><head><title>Login - YEDC</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="bg-light p-5"><div class="container">
-<h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
-<input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
-<input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
-<button type="submit" class="btn btn-success w-100">Login</button>
-</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
+<!DOCTYPE html><html><head><style>body{font-family:Arial;background:#f5f5f5;padding:50px}form{background:#fff;padding:20px;border-radius:10px;max-width:300px;margin:auto;box-shadow:0 0 10px #ccc}input{margin:5px 0;padding:10px;width:100%}</style></head><body>
+<h2 style='text-align:center;'>YEDC Login</h2><form method="POST">
+<input name="email" placeholder="Email" required>
+<input name="password" type="password" placeholder="Password" required>
+<button type="submit">Login</button></form></body></html>
 """
 
-dashboard_html = """
-<!DOCTYPE html><html><head><title>Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
-<body class="p-4"><div class="container">
-<h3>YEDC Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
-{% with messages = get_flashed_messages() %}
-{% if messages %}
-<div class="alert alert-success">{{ messages[0] }}</div>
-{% endif %}{% endwith %}
-
-{% if role == 'admin' %}
-<form method="POST" action="/add_unit" class="my-3 row">
-<div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
-<div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
-<div class="col">
-<select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select>
-</div><div class="col"><button class="btn btn-primary">Add Unit</button></div></form>
-{% endif %}
-
-<table class="table table-bordered mt-4">
-<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
-{% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>
-{% if role=='buyer' and u.status == 'Available' %}
-<button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
-{% else %}-{% endif %}
-</td></tr>
-{% endfor %}
-</table>
-
-<a href="/logout" class="btn btn-danger mt-3">Logout</a>
-</div>
-
-<script>
-async function buyUnit(id, price) {
-if (typeof window.ethereum !== 'undefined') {
-    const web3 = new Web3(window.ethereum);
-    await window.ethereum.request({ method: 'eth_requestAccounts' });
-    const accounts = await web3.eth.getAccounts();
-    const seller = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"; // Replace with actual seller wallet address
-    await web3.eth.sendTransaction({
-        from: accounts[0],
-        to: seller,
-        value: web3.utils.toWei(price, 'ether')
-    });
-    window.location.href = "/buy/" + id;
-} else {
-    alert("MetaMask not detected");
-}
-}
-</script>
-</body></html>
+buyer_html = """
+<!DOCTYPE html><html><head><style>body{font-family:Arial;padding:50px}table{width:100%;border-collapse:collapse}th,td{padding:10px;border:1px solid #ccc}</style></head><body>
+<h2>Available Energy Units</h2><table><tr><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Action</th></tr>
+{% for unit in units %}<tr><td>{{unit.units}}</td><td>{{unit.price_eth}}</td><td>{{unit.band}}</td><td><a href="/buy/{{unit.id}}">Buy</a></td></tr>{% endfor %}
+</table><br><a href='/logout'>Logout</a></body></html>
 """
 
-# ---- Run ----
+admin_html = """
+<!DOCTYPE html><html><head><style>body{font-family:Arial}nav{width:200px;float:left;background:#333;height:100vh;padding:20px;color:white}a{color:white;display:block;margin:10px 0}main{margin-left:220px;padding:20px}</style></head><body>
+<nav><h3>Admin Panel</h3><a href='/admin/add'>Add Listing</a><a href='/admin/pending'>Pending Transactions</a><a href='/admin/complete'>Complete Transactions</a><a href='/logout'>Logout</a></nav><main><h2>Welcome Admin</h2></main></body></html>
+"""
+
+add_listing_html = """
+<!DOCTYPE html><html><body><h2>Add Unit Listing</h2><form method="POST">
+<input name="units" placeholder="Units" required>
+<input name="price" placeholder="Price ETH" required>
+<input name="band" placeholder="Band" required>
+<button type="submit">Add</button></form><br><a href='/admin'>Back</a></body></html>
+"""
+
+pending_html = """
+<!DOCTYPE html><html><body><h2>Pending Transactions</h2><table border=1><tr><th>Buyer</th><th>Meter</th><th>Units</th><th>ETH</th><th>Band</th><th>Action</th></tr>
+{% for o in orders %}<tr><td>{{o.buyer_email}}</td><td>{{o.meter_number}}</td><td>{{o.units}}</td><td>{{o.amount_eth}}</td><td>{{o.band}}</td><td><a href="/admin/mark_paid/{{o.id}}">Mark as Paid</a></td></tr>{% endfor %}
+</table><br><a href='/admin'>Back</a></body></html>
+"""
+
+complete_html = """
+<!DOCTYPE html><html><body><h2>Complete Transactions</h2><table border=1><tr><th>Buyer</th><th>Meter</th><th>Units</th><th>ETH</th><th>Band</th></tr>
+{% for o in orders %}<tr><td>{{o.buyer_email}}</td><td>{{o.meter_number}}</td><td>{{o.units}}</td><td>{{o.amount_eth}}</td><td>{{o.band}}</td></tr>{% endfor %}
+</table><br><a href='/admin'>Back</a></body></html>
+"""
+
+# Run the app
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(debug=True)
