@@ -2,18 +2,27 @@ from flask import Flask, request, redirect, session, flash, render_template_stri
 from flask_sqlalchemy import SQLAlchemy
 from web3 import Web3
 from solcx import compile_standard, install_solc
+from dotenv import load_dotenv
 import json
 import os
+
+# Load environment variables
+load_dotenv()
+
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+INFURA_PROJECT_ID = os.getenv("INFURA_PROJECT_ID")
+
+if not PRIVATE_KEY or not INFURA_PROJECT_ID:
+    raise Exception("PRIVATE_KEY and INFURA_PROJECT_ID must be set in .env")
 
 app = Flask(__name__)
 app.secret_key = 'yedc_secret'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market.db'
 db = SQLAlchemy(app)
 
-# Connect to a local Ganache or Testnet (Replace with your network if needed)
-w3 = Web3(Web3.HTTPProvider("https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID"))  # Replace with actual RPC URL
-deployer_private_key = "YOUR_PRIVATE_KEY"  # Use ENV variable in production!
-deployer_account = w3.eth.account.from_key(deployer_private_key)
+# Connect to Sepolia via Infura
+w3 = Web3(Web3.HTTPProvider(f"https://sepolia.infura.io/v3/{INFURA_PROJECT_ID}"))
+deployer_account = w3.eth.account.from_key(PRIVATE_KEY)
 
 # Compile Solidity Contract
 install_solc('0.8.20')
@@ -55,21 +64,30 @@ compiled_sol = compile_standard({
 abi = compiled_sol['contracts']['YEDCPayment.sol']['YEDCPayment']['abi']
 bytecode = compiled_sol['contracts']['YEDCPayment.sol']['YEDCPayment']['evm']['bytecode']['object']
 
-# Deploy contract
-contract = w3.eth.contract(abi=abi, bytecode=bytecode)
-nonce = w3.eth.get_transaction_count(deployer_account.address)
-transaction = contract.constructor().build_transaction({
-    'from': deployer_account.address,
-    'nonce': nonce,
-    'gas': 3000000,
-    'gasPrice': w3.eth.gas_price
-})
+# Deploy contract only if not deployed yet
+contract_file = 'contract_address.json'
+if os.path.exists(contract_file):
+    with open(contract_file, 'r') as f:
+        contract_data = json.load(f)
+    contract_address = contract_data['address']
+else:
+    contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+    nonce = w3.eth.get_transaction_count(deployer_account.address)
+    transaction = contract.constructor().build_transaction({
+        'from': deployer_account.address,
+        'nonce': nonce,
+        'gas': 3000000,
+        'gasPrice': w3.eth.gas_price
+    })
 
-signed_txn = w3.eth.account.sign_transaction(transaction, private_key=deployer_private_key)
-tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    signed_txn = w3.eth.account.sign_transaction(transaction, private_key=PRIVATE_KEY)
+    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+    tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    contract_address = tx_receipt.contractAddress
 
-contract_address = tx_receipt.contractAddress
+    with open(contract_file, 'w') as f:
+        json.dump({"address": contract_address}, f)
+
 yedc_contract = w3.eth.contract(address=contract_address, abi=abi)
 
 # ---- Models ----
@@ -172,6 +190,11 @@ def buy(unit_id):
 @app.route('/abi')
 def get_abi():
     return json.dumps(abi)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
 
 # ---- HTML Templates ----
 register_html = """
