@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, url_for
+from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
@@ -21,6 +21,9 @@ class Unit(db.Model):
     price_eth = db.Column(db.Float)
     band = db.Column(db.String(10))
     status = db.Column(db.String(20), default="Available")
+    buyer_meter = db.Column(db.String(100), nullable=True)
+    buyer_email = db.Column(db.String(100), nullable=True)
+    transaction_status = db.Column(db.String(20), default="Pending")
 
 # ---- Initialize DB ----
 with app.app_context():
@@ -75,8 +78,12 @@ def login():
 def dashboard():
     if 'user' not in session:
         return redirect('/login')
-    units = Unit.query.all()
-    return render_template_string(dashboard_html, units=units, role=session['role'], meter=session['meter'])
+    role = session['role']
+    if role == 'admin':
+        units = Unit.query.all()
+    else:
+        units = Unit.query.filter_by(status='Available').all()
+    return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'])
 
 @app.route('/add_unit', methods=['POST'])
 def add_unit():
@@ -95,13 +102,40 @@ def buy(unit_id):
     if session.get('role') != 'buyer':
         return redirect('/dashboard')
     unit = Unit.query.get(unit_id)
-    if unit.status == 'Sold':
-        flash('Unit already sold')
+    if unit.status != 'Available':
+        flash('Unit not available.')
     else:
-        unit.status = 'Sold'
+        unit.status = 'Pending'
+        unit.buyer_meter = session['meter']
+        unit.buyer_email = session['user']
         db.session.commit()
-        flash(f'{unit.units} Unit purchased! Recharge will be processed to meter: {session["meter"]}')
+        flash(f'Unit purchased! Admin will verify and credit your meter: {session["meter"]}')
     return redirect('/dashboard')
+
+@app.route('/pending')
+def pending():
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    pending_units = Unit.query.filter_by(status='Pending').all()
+    return render_template_string(pending_html, units=pending_units)
+
+@app.route('/complete')
+def complete():
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    complete_units = Unit.query.filter_by(status='Sold').all()
+    return render_template_string(complete_html, units=complete_units)
+
+@app.route('/release/<int:unit_id>')
+def release(unit_id):
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    unit = Unit.query.get(unit_id)
+    unit.status = 'Sold'
+    unit.transaction_status = 'Paid'
+    db.session.commit()
+    flash(f'Unit credited to meter {unit.buyer_meter}')
+    return redirect('/pending')
 
 @app.route('/logout')
 def logout():
@@ -109,6 +143,7 @@ def logout():
     return redirect('/login')
 
 # ---- HTML Templates ----
+
 register_html = """
 <!DOCTYPE html><html><head><title>Register - YEDC</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -137,85 +172,98 @@ login_html = """
 
 dashboard_html = """
 <!DOCTYPE html><html><head><title>Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
-<body class="p-4"><div class="container">
-<h3 class="mb-3">YEDC Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body><div class="container-fluid">
+<div class="row">
+<div class="col-2 bg-dark text-white p-3" style="min-height:100vh;">
+<h4>Admin Panel</h4>
+{% if role == 'admin' %}
+<a href="/dashboard" class="d-block text-white mb-2">View Listings</a>
+<a href="/pending" class="d-block text-white mb-2">Pending Transactions</a>
+<a href="/complete" class="d-block text-white mb-2">Completed</a>
+{% endif %}
+<a href="/logout" class="d-block text-white mt-4">Logout</a>
+</div>
 
+<div class="col-10 p-4">
+<h3>Dashboard - {{ role|capitalize }}</h3>
 {% with messages = get_flashed_messages() %}
 {% if messages %}
-<div class="alert alert-success">{{ messages[0] }}</div>
-{% endif %}{% endwith %}
+<div class="alert alert-info">{{ messages[0] }}</div>
+{% endif %}
+{% endwith %}
 
-<div class="row">
-    {% if role == 'admin' %}
-    <div class="col-md-3">
-        <h5>Admin Actions</h5>
-        <form method="POST" action="/add_unit" class="my-3">
-        <input name="units" class="form-control mb-2" placeholder="Units" required>
-        <input name="price" class="form-control mb-2" placeholder="Price ETH" required>
-        <select name="band" class="form-control mb-2"><option>A</option><option>B</option><option>C</option><option>D</option></select>
-        <button class="btn btn-primary w-100">Add Unit</button>
-        </form>
-    </div>
-    <div class="col-md-9">
-    {% else %}
-    <div class="col-12">
-    {% endif %}
+{% if role == 'admin' %}
+<form method="POST" action="/add_unit" class="row my-3">
+<div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
+<div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
+<div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+<div class="col"><button class="btn btn-primary">Add Unit</button></div>
+</form>
+{% endif %}
 
-    <table class="table table-bordered">
-    <tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
-    {% for u in units %}
-    <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-    <td>
-    {% if role=='buyer' and u.status == 'Available' %}
-    <button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
-    {% else %}-{% endif %}
-    </td></tr>
-    {% endfor %}
-    </table>
-    </div>
-</div>
-
-<a href="/logout" class="btn btn-danger mt-3">Logout</a>
-</div>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
+{% for u in units %}
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
+<td>
+{% if role=='buyer' and u.status == 'Available' %}
+<button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
+{% else %}-{% endif %}
+</td></tr>
+{% endfor %}
+</table>
+</div></div></div>
 
 <script>
 async function buyUnit(id, price) {
-try {
-    if (typeof window.ethereum !== 'undefined') {
-        const web3 = new Web3(window.ethereum);
-        await window.ethereum.request({ method: 'eth_requestAccounts' });
-        
-        // Optional: Force network (Mainnet)
-        await window.ethereum.request({
-            method: 'wallet_switchEthereumChain',
-            params: [{ chainId: '0x1' }] // Mainnet; use '0x5' for Goerli Testnet if needed
-        });
-
-        const accounts = await web3.eth.getAccounts();
-        const seller = "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b"; // Your seller wallet
-
-        await web3.eth.sendTransaction({
-            from: accounts[0],
-            to: seller,
-            value: web3.utils.toWei(price, 'ether')
-        });
-
-        window.location.href = "/buy/" + id;
-    } else {
-        alert("MetaMask not detected");
+    if (typeof window.ethereum === 'undefined') {
+        alert("MetaMask not found! Please install MetaMask.");
+        return;
     }
-} catch (err) {
-    console.error(err);
-    alert("Transaction cancelled or failed.");
-}
+    try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const tx = {
+            from: accounts[0],
+            to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
+            value: '0x' + (BigInt(price * 1e18)).toString(16)
+        };
+        await window.ethereum.request({ method: 'eth_sendTransaction', params: [tx] });
+        window.location.href = "/buy/" + id;
+    } catch (err) {
+        console.error(err);
+        alert("Transaction failed or cancelled.");
+    }
 }
 </script>
-
 </body></html>
+"""
+
+pending_html = """
+<!DOCTYPE html><html><head><title>Pending</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
+<div class="container mt-5"><h3>Pending Transactions</h3>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th><th>Action</th></tr>
+{% for u in units %}
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td>
+<td><a href="/release/{{ u.id }}" class="btn btn-primary btn-sm">Release</a></td></tr>
+{% endfor %}
+</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
+"""
+
+complete_html = """
+<!DOCTYPE html><html><head><title>Completed</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
+<div class="container mt-5"><h3>Completed Transactions</h3>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th></tr>
+{% for u in units %}
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td></tr>
+{% endfor %}
+</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
 """
 
 # ---- Run ----
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)
