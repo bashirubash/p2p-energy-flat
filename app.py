@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string
+from flask import Flask, request, redirect, session, flash, render_template_string, url_for
 from flask_sqlalchemy import SQLAlchemy
 from web3 import Web3
 from solcx import compile_standard, install_solc
@@ -10,20 +10,76 @@ app.secret_key = 'yedc_secret'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market.db'
 db = SQLAlchemy(app)
 
-# Web3 Setup (Ganache Localhost)
-w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
-chain_id = 1337
-my_address = w3.eth.accounts[0]
-private_key = "0x4f3edf983ac636a65a842ce7c78d9aa706d3b113b37e6d30d5d8c3fb923b5bda"
+# Connect to a local Ganache or Testnet (Replace with your network if needed)
+w3 = Web3(Web3.HTTPProvider("https://sepolia.infura.io/v3/YOUR_INFURA_PROJECT_ID"))  # Replace with actual RPC URL
+deployer_private_key = "YOUR_PRIVATE_KEY"  # Use ENV variable in production!
+deployer_account = w3.eth.account.from_key(deployer_private_key)
 
-# Models
+# Compile Solidity Contract
+install_solc('0.8.20')
+
+contract_source = '''
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract YEDCPayment {
+    address public owner;
+    event EnergyBought(address indexed buyer, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function buyEnergy() external payable {
+        require(msg.value > 0, "Send ETH to buy energy");
+        emit EnergyBought(msg.sender, msg.value);
+    }
+
+    function withdraw(uint256 amount) external {
+        require(msg.sender == owner, "Only owner can withdraw");
+        payable(owner).transfer(amount);
+    }
+}
+'''
+
+compiled_sol = compile_standard({
+    "language": "Solidity",
+    "sources": {"YEDCPayment.sol": {"content": contract_source}},
+    "settings": {
+        "outputSelection": {
+            "*": {"*": ["abi", "metadata", "evm.bytecode", "evm.sourceMap"]}
+        }
+    }
+}, solc_version="0.8.20")
+
+abi = compiled_sol['contracts']['YEDCPayment.sol']['YEDCPayment']['abi']
+bytecode = compiled_sol['contracts']['YEDCPayment.sol']['YEDCPayment']['evm']['bytecode']['object']
+
+# Deploy contract
+contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+nonce = w3.eth.get_transaction_count(deployer_account.address)
+transaction = contract.constructor().build_transaction({
+    'from': deployer_account.address,
+    'nonce': nonce,
+    'gas': 3000000,
+    'gasPrice': w3.eth.gas_price
+})
+
+signed_txn = w3.eth.account.sign_transaction(transaction, private_key=deployer_private_key)
+tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+
+contract_address = tx_receipt.contractAddress
+yedc_contract = w3.eth.contract(address=contract_address, abi=abi)
+
+# ---- Models ----
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
     meter_number = db.Column(db.String(100))
     email = db.Column(db.String(100), unique=True)
     password = db.Column(db.String(100))
-    role = db.Column(db.String(10))
+    role = db.Column(db.String(10))  # admin or buyer
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -32,65 +88,17 @@ class Unit(db.Model):
     band = db.Column(db.String(10))
     status = db.Column(db.String(20), default="Available")
 
-# Deploy or Load Smart Contract
-def deploy_contract():
-    if os.path.exists("contract_address.txt"):
-        with open("contract_address.txt", "r") as f:
-            return f.read().strip()
-
-    install_solc('0.8.0')
-    with open("YEDCPayment.sol", "r") as file:
-        contract_source_code = file.read()
-
-    compiled_sol = compile_standard({
-        "language": "Solidity",
-        "sources": {"YEDCPayment.sol": {"content": contract_source_code}},
-        "settings": {"outputSelection": {"*": {"*": ["abi", "evm.bytecode"]}}}
-    }, solc_version="0.8.0")
-
-    abi = compiled_sol["contracts"]["YEDCPayment.sol"]["YEDCPayment"]["abi"]
-    bytecode = compiled_sol["contracts"]["YEDCPayment.sol"]["YEDCPayment"]["evm"]["bytecode"]["object"]
-
-    with open("YEDCPayment_abi.json", "w") as f:
-        json.dump(abi, f)
-
-    contract = w3.eth.contract(abi=abi, bytecode=bytecode)
-    nonce = w3.eth.get_transaction_count(my_address)
-    tx = contract.constructor().build_transaction({
-        'chainId': chain_id,
-        'from': my_address,
-        'nonce': nonce,
-        'gas': 500000,
-        'gasPrice': w3.to_wei('5', 'gwei')
-    })
-    signed_tx = w3.eth.account.sign_transaction(tx, private_key)
-    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-
-    with open("contract_address.txt", "w") as f:
-        f.write(receipt.contractAddress)
-
-    return receipt.contractAddress
-
-contract_address = deploy_contract()
-
-# Load Contract
-with open("YEDCPayment_abi.json", "r") as f:
-    contract_abi = json.load(f)
-
-contract = w3.eth.contract(address=contract_address, abi=contract_abi)
-
-# Initialize DB
+# ---- Initialize DB ----
 with app.app_context():
     db.create_all()
-    if not User.query.filter_by(email="gurus@gmail.com").first():
-        admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
+    if not User.query.filter_by(email="admin@yedc.com").first():
+        admin = User(name="Admin", meter_number="0000", email="admin@yedc.com", password="Admin123", role="admin")
         db.session.add(admin)
-        for i in range(50):
+        for i in range(20):
             db.session.add(Unit(units=1, price_eth=0.0005, band="D"))
         db.session.commit()
 
-# Routes
+# ---- Routes ----
 @app.route('/')
 def home():
     return redirect('/login')
@@ -134,7 +142,7 @@ def dashboard():
     if 'user' not in session:
         return redirect('/login')
     units = Unit.query.all()
-    return render_template_string(dashboard_html, units=units, role=session['role'], meter=session['meter'])
+    return render_template_string(dashboard_html, units=units, role=session['role'], meter=session['meter'], contract_address=contract_address)
 
 @app.route('/add_unit', methods=['POST'])
 def add_unit():
@@ -158,16 +166,18 @@ def buy(unit_id):
     else:
         unit.status = 'Sold'
         db.session.commit()
-        flash('Transaction completed. Please approve the transaction in your wallet.')
-
+        flash('Transaction completed via blockchain. Meter: ' + session['meter'])
     return redirect('/dashboard')
 
-# HTML Templates
+@app.route('/abi')
+def get_abi():
+    return json.dumps(abi)
+
+# ---- HTML Templates ----
 register_html = """
-<!DOCTYPE html><html><head><title>Register - YEDC</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light p-5">
-<div class="container"><h2 class="text-center">YEDC Registration</h2>
+<!DOCTYPE html><html><head><title>Register</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light p-5"><div class="container"><h2 class="text-center">YEDC Registration</h2>
 <form method="POST" class="mt-4">
 <input name="name" class="form-control mb-2" placeholder="Name" required>
 <input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
@@ -179,7 +189,7 @@ register_html = """
 """
 
 login_html = """
-<!DOCTYPE html><html><head><title>Login - YEDC</title>
+<!DOCTYPE html><html><head><title>Login</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
 <body class="bg-light p-5"><div class="container">
 <h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
@@ -194,19 +204,17 @@ dashboard_html = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
 <body class="p-4"><div class="container">
-<h3>YEDC Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
+<h3>Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
 {% with messages = get_flashed_messages() %}
-{% if messages %}
-<div class="alert alert-success">{{ messages[0] }}</div>
-{% endif %}{% endwith %}
+{% if messages %}<div class="alert alert-success">{{ messages[0] }}</div>{% endif %}
+{% endwith %}
 
 {% if role == 'admin' %}
 <form method="POST" action="/add_unit" class="my-3 row">
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
-<div class="col">
-<select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select>
-</div><div class="col"><button class="btn btn-primary">Add Unit</button></div></form>
+<div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+<div class="col"><button class="btn btn-primary">Add Unit</button></div></form>
 {% endif %}
 
 <table class="table table-bordered mt-4">
@@ -230,11 +238,16 @@ async function buyUnit(id, price) {
         const web3 = new Web3(window.ethereum);
         await window.ethereum.request({ method: 'eth_requestAccounts' });
         const accounts = await web3.eth.getAccounts();
-        const contract = new web3.eth.Contract({{ contract_abi|safe }}, "{{ contract_address }}");
+        const contractAddress = "{{ contract_address }}";
+        const response = await fetch("/abi");
+        const abi = await response.json();
+        const contract = new web3.eth.Contract(abi, contractAddress);
+
         await contract.methods.buyEnergy().send({
             from: accounts[0],
             value: web3.utils.toWei(price, 'ether')
         });
+
         window.location.href = "/buy/" + id;
     } else {
         alert("MetaMask not detected");
@@ -244,5 +257,6 @@ async function buyUnit(id, price) {
 </body></html>
 """
 
+# ---- Run ----
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
