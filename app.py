@@ -1,19 +1,20 @@
-from flask import Flask, render_template_string, request, redirect, session, flash, url_for
+from flask import Flask, render_template_string, request, redirect, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from web3 import Web3
-import os
+import json
 
 app = Flask(__name__)
 app.secret_key = 'yedc_secret'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///market.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///yedc.db'
 db = SQLAlchemy(app)
 
-# Connect to Web3 (use Infura, Alchemy, or local Ganache in real deployment)
-w3 = Web3(Web3.HTTPProvider('https://rpc.sepolia.org'))  # Example using Sepolia
+# --- Blockchain Setup ---
+w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))  # Local testnet via Hardhat
 
-contract_address = Web3.to_checksum_address('0x80b4d4b8BF0e2D52757a74E7a3748d57605D61E9')
+# Paste your deployed contract address here after deploying locally
+contract_address = Web3.to_checksum_address("0xYourLocalContractAddress")
 
-contract_abi = [
+contract_abi = [  # Your ABI here (simplified for brevity)
     {
         "inputs": [],
         "stateMutability": "nonpayable",
@@ -37,30 +38,30 @@ contract_abi = [
     },
     {
         "inputs": [],
-        "name": "owner",
-        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
-        "stateMutability": "view",
+        "name": "withdraw",
+        "outputs": [],
+        "stateMutability": "nonpayable",
         "type": "function"
     },
     {
         "inputs": [],
-        "name": "withdraw",
-        "outputs": [],
-        "stateMutability": "nonpayable",
+        "name": "owner",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
         "type": "function"
     }
 ]
 
 contract = w3.eth.contract(address=contract_address, abi=contract_abi)
 
-# ---- Models ----
+# --- Database Models ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100))
-    meter_number = db.Column(db.String(100))
+    name = db.Column(db.String(50))
+    meter_number = db.Column(db.String(50))
     email = db.Column(db.String(100), unique=True)
     password = db.Column(db.String(100))
-    role = db.Column(db.String(10))  # admin or buyer
+    role = db.Column(db.String(10))  # 'admin' or 'buyer'
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -68,18 +69,18 @@ class Unit(db.Model):
     price_eth = db.Column(db.Float)
     band = db.Column(db.String(10))
     status = db.Column(db.String(20), default="Available")
+    buyer_wallet = db.Column(db.String(100))
+    pending = db.Column(db.Boolean, default=False)
 
-# ---- Initialize DB ----
+# --- Setup ---
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(email="gurus@gmail.com").first():
         admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
         db.session.add(admin)
-        for i in range(50):
-            db.session.add(Unit(units=1, price_eth=0.0005, band="D"))
         db.session.commit()
 
-# ---- Routes ----
+# --- Routes ---
 @app.route('/')
 def home():
     return redirect('/login')
@@ -100,7 +101,7 @@ def register():
             return redirect('/register')
         db.session.add(User(name=name, meter_number=meter, email=email, password=password, role='buyer'))
         db.session.commit()
-        flash('Registered successfully. Please log in.')
+        flash('Registered successfully.')
         return redirect('/login')
     return render_template_string(register_html)
 
@@ -143,39 +144,52 @@ def buy(unit_id):
         return redirect('/dashboard')
     unit = Unit.query.get(unit_id)
     if unit.status == 'Sold':
-        flash('Already sold')
-        return redirect('/dashboard')
-    try:
-        buyer_address = request.form['wallet']
-        txn = contract.functions.buyEnergy().build_transaction({
-            'from': buyer_address,
-            'value': w3.to_wei(unit.price_eth, 'ether'),
-            'nonce': w3.eth.get_transaction_count(buyer_address),
-            'gas': 200000,
-            'gasPrice': w3.to_wei('50', 'gwei')
-        })
-        flash('Transaction initialized. Please confirm it in MetaMask.')
-    except Exception as e:
-        flash(f'Error: {str(e)}')
-        return redirect('/dashboard')
-
+        return 'Already sold'
+    buyer_wallet = request.json.get('wallet')
     unit.status = 'Pending'
+    unit.buyer_wallet = buyer_wallet
+    unit.pending = True
     db.session.commit()
-    flash(f'{unit.units} unit(s) purchased. Awaiting admin approval for meter {session["meter"]}.')
-    return redirect('/dashboard')
+    return {'status': 'pending', 'message': 'Transaction recorded. Awaiting admin approval.'}
+
+@app.route('/pending')
+def pending():
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    units = Unit.query.filter_by(pending=True).all()
+    return render_template_string(pending_html, units=units)
+
+@app.route('/approve/<int:unit_id>')
+def approve(unit_id):
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    unit = Unit.query.get(unit_id)
+    unit.status = 'Sold'
+    unit.pending = False
+    db.session.commit()
+    return redirect('/pending')
+
+@app.route('/withdraw')
+def withdraw():
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    admin = w3.eth.accounts[0]  # Local owner account in Hardhat
+    tx = contract.functions.withdraw().transact({'from': admin})
+    return f'Withdrawal successful. TX: {tx.hex()}'
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect('/login')
 
-# ---- HTML Templates ----
+# --- HTML Templates ---
+
 register_html = """
-<!DOCTYPE html><html><head><title>Register - YEDC</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light p-5">
-<div class="container"><h2 class="text-center">YEDC Registration</h2>
-<form method="POST" class="mt-4">
+<!DOCTYPE html><html><head><title>Register</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light p-5"><div class="container">
+<h3>Register</h3>
+<form method="POST">
 <input name="name" class="form-control mb-2" placeholder="Name" required>
 <input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
 <input name="email" class="form-control mb-2" placeholder="Email" required>
@@ -186,10 +200,11 @@ register_html = """
 """
 
 login_html = """
-<!DOCTYPE html><html><head><title>Login - YEDC</title>
+<!DOCTYPE html><html><head><title>Login</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
 <body class="bg-light p-5"><div class="container">
-<h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
+<h3>Login</h3>
+<form method="POST">
 <input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
 <input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
 <button type="submit" class="btn btn-success w-100">Login</button>
@@ -201,40 +216,73 @@ dashboard_html = """
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
 <body class="p-4"><div class="container">
-<h3>YEDC Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
-{% with messages = get_flashed_messages() %}
-{% if messages %}
-<div class="alert alert-success">{{ messages[0] }}</div>
-{% endif %}{% endwith %}
+<h3>Dashboard - {{ role|capitalize }}</h3><p>Meter: {{ meter }}</p>
 
 {% if role == 'admin' %}
 <form method="POST" action="/add_unit" class="my-3 row">
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
-<div class="col">
-<select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select>
-</div><div class="col"><button class="btn btn-primary">Add Unit</button></div></form>
+<div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+<div class="col"><button class="btn btn-primary">Add Unit</button></div>
+</form>
+<a href="/pending" class="btn btn-warning mb-3">View Pending</a>
+<a href="/withdraw" class="btn btn-danger mb-3">Withdraw</a>
 {% endif %}
 
-<table class="table table-bordered mt-4">
+<table class="table table-bordered">
 <tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
 {% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td><td>
 {% if role=='buyer' and u.status == 'Available' %}
-<form method="POST" action="/buy/{{ u.id }}">
-<input type="text" name="wallet" class="form-control mb-2" placeholder="Your Wallet Address" required>
-<button type="submit" class="btn btn-success btn-sm">Buy</button>
-</form>
+<button onclick="buy('{{ u.id }}', '{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
 {% else %}-{% endif %}
 </td></tr>
 {% endfor %}
 </table>
 
-<a href="/logout" class="btn btn-danger mt-3">Logout</a>
-</div></body></html>
+<a href="/logout" class="btn btn-secondary">Logout</a>
+</div>
+
+<script>
+async function buy(id, price) {
+    if (window.ethereum) {
+        const web3 = new Web3(window.ethereum);
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const accounts = await web3.eth.getAccounts();
+        const tx = await web3.eth.sendTransaction({
+            from: accounts[0],
+            to: "{{ contract_address }}",
+            value: web3.utils.toWei(price, 'ether')
+        });
+        await fetch("/buy/" + id, {
+            method: "POST",
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({wallet: accounts[0]})
+        });
+        alert("Transaction sent! Await admin release.");
+        window.location.reload();
+    } else {
+        alert("Please install Metamask.");
+    }
+}
+</script>
+</body></html>
 """
 
-# ---- Run ----
+pending_html = """
+<!DOCTYPE html><html><head><title>Pending Transactions</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="p-4"><div class="container">
+<h3>Pending Transactions</h3>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Buyer Wallet</th><th>Units</th><th>Band</th><th>Action</th></tr>
+{% for u in units %}
+<tr><td>{{ u.id }}</td><td>{{ u.buyer_wallet }}</td><td>{{ u.units }}</td><td>{{ u.band }}</td>
+<td><a href="/approve/{{ u.id }}" class="btn btn-primary">Mark Paid</a></td></tr>
+{% endfor %}
+</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
+"""
+
+# --- Run App ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host="0.0.0.0", port=5000)
