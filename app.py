@@ -1,29 +1,3 @@
-Perfect!
-Since you want to use a Local Blockchain (like Ganache, Hardhat, or Anvil), here’s the fully corrected all-in-one app.py for YEDC Payment System, designed to:
-
-✅ Deploy the contract locally
-
-✅ Manage registration, login, admin unit listing
-✅ Simulate energy purchases via MetaMask (no real ETH needed)
-
-
----
-
-Run Local Blockchain First:
-
-Option 1: Ganache
-
-ganache-cli --deterministic --accounts 10 --defaultBalanceEther 1000
-
-Option 2: Anvil (foundry)
-
-anvil
-
-
----
-
-Here is your Full app.py:
-
 from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 from web3 import Web3
@@ -275,18 +249,4 @@ def logout():
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 
-
----
-
-How to Run:
-
-1️⃣ Start Ganache or Anvil
-2️⃣ Run python app.py
-3️⃣ Open in browser: http://localhost:5000
-
-
----
-
-If you'd like, I can also generate a downloadable ZIP or Render deployment config.
-Do you want that?
 
