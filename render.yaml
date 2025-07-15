@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: p2p-energy-market
+    name: yedc-energy-app
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
