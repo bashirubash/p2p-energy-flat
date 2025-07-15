@@ -13,7 +13,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 INFURA_PROJECT_ID = os.getenv("INFURA_PROJECT_ID")
 
 if not PRIVATE_KEY or not INFURA_PROJECT_ID:
-    raise Exception("PRIVATE_KEY and INFURA_PROJECT_ID must be set in .env")
+    raise Exception("w3 = Web3(Web3.HTTPProvider("https://sepolia.infura.io/v3/abcd1234efgh5678ijkl9012mnop3456"))
 
 app = Flask(__name__)
 app.secret_key = 'yedc_secret'
