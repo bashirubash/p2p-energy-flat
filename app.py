@@ -1,5 +1,6 @@
 from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
+import random
 
 app = Flask(__name__)
 app.secret_key = 'yedc_secret'
@@ -13,7 +14,7 @@ class User(db.Model):
     meter_number = db.Column(db.String(100))
     email = db.Column(db.String(100), unique=True)
     password = db.Column(db.String(100))
-    role = db.Column(db.String(10))  # admin or buyer
+    role = db.Column(db.String(10))
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -56,9 +57,17 @@ def register():
             return redirect('/register')
         db.session.add(User(name=name, meter_number=meter, email=email, password=password, role='buyer'))
         db.session.commit()
-        flash('Registered successfully. Please log in.')
-        return redirect('/login')
+        session['user'] = email
+        session['role'] = 'buyer'
+        session['meter'] = meter
+        return redirect('/welcome')
     return render_template_string(register_html)
+
+@app.route('/welcome')
+def welcome():
+    if 'user' not in session:
+        return redirect('/login')
+    return render_template_string(welcome_html, meter=session['meter'])
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -117,7 +126,8 @@ def pending():
     if session.get('role') != 'admin':
         return redirect('/dashboard')
     pending_units = Unit.query.filter_by(status='Pending').all()
-    return render_template_string(pending_html, units=pending_units)
+    random_pending = random.sample(pending_units, min(15, len(pending_units)))
+    return render_template_string(pending_html, units=random_pending)
 
 @app.route('/complete')
 def complete():
@@ -148,7 +158,7 @@ register_html = """
 <!DOCTYPE html><html><head><title>Register - YEDC</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 </head><body class="bg-light p-5">
-<div class="container"><h2 class="text-center">YEDC Registration</h2>
+<div class="container text-center"><h2>YEDC Registration</h2>
 <form method="POST" class="mt-4">
 <input name="name" class="form-control mb-2" placeholder="Name" required>
 <input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
@@ -156,7 +166,45 @@ register_html = """
 <input name="password" class="form-control mb-2" type="password" placeholder="Password" required>
 <input name="confirm" class="form-control mb-3" type="password" placeholder="Confirm Password" required>
 <button type="submit" class="btn btn-primary w-100">Register</button>
-</form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div></body></html>
+</form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div>
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</body></html>
+"""
+
+welcome_html = """
+<!DOCTYPE html><html><head><title>Welcome - YEDC</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
+<body class="bg-light p-5">
+<div class="container text-center">
+<h2 class="mb-4">Welcome to YEDC Energy Portal!</h2>
+<p>Your meter <b>{{ meter }}</b> has been successfully registered.</p>
+
+<button class="btn btn-primary m-3" onclick="connectWallet()">Connect Wallet</button>
+<a href="/dashboard" class="btn btn-success m-3">Visit Marketplace</a>
+
+<div id="wallet-address" class="mt-4 text-muted"></div>
+
+<footer class="bg-dark text-white text-center p-3 mt-5">
+  <small>© 2025 YEDC Energy Payment Portal | Powered by Blockchain</small>
+</footer>
+</div>
+
+<script>
+async function connectWallet() {
+    if (window.ethereum) {
+        try {
+            const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+            document.getElementById('wallet-address').innerText = "Wallet Connected: " + accounts[0];
+        } catch (err) {
+            alert("Wallet connection rejected!");
+        }
+    } else {
+        alert("MetaMask not detected. Please install MetaMask.");
+    }
+}
+</script>
+</body></html>
 """
 
 login_html = """
@@ -167,7 +215,9 @@ login_html = """
 <input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
 <input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
 <button type="submit" class="btn btn-success w-100">Login</button>
-</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
+</form><a href="/register" class="d-block text-center mt-3">Register</a></div>
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</body></html>
 """
 
 dashboard_html = """
@@ -176,10 +226,10 @@ dashboard_html = """
 <body><div class="container-fluid">
 <div class="row">
 <div class="col-2 bg-dark text-white p-3" style="min-height:100vh;">
-<h4>Admin Panel</h4>
+<h4>YEDC Panel</h4>
 {% if role == 'admin' %}
-<a href="/dashboard" class="d-block text-white mb-2">View Listings</a>
-<a href="/pending" class="d-block text-white mb-2">Pending Transactions</a>
+<a href="/dashboard" class="d-block text-white mb-2">Listings</a>
+<a href="/pending" class="d-block text-white mb-2">Pending</a>
 <a href="/complete" class="d-block text-white mb-2">Completed</a>
 {% endif %}
 <a href="/logout" class="d-block text-white mt-4">Logout</a>
@@ -188,9 +238,7 @@ dashboard_html = """
 <div class="col-10 p-4">
 <h3>Dashboard - {{ role|capitalize }}</h3>
 {% with messages = get_flashed_messages() %}
-{% if messages %}
-<div class="alert alert-info">{{ messages[0] }}</div>
-{% endif %}
+{% if messages %}<div class="alert alert-info">{{ messages[0] }}</div>{% endif %}
 {% endwith %}
 
 {% if role == 'admin' %}
@@ -198,58 +246,38 @@ dashboard_html = """
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
 <div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
-<div class="col"><button class="btn btn-primary">Add Unit</button></div>
+<div class="col"><button class="btn btn-primary">Add</button></div>
 </form>
 {% endif %}
 
-<table class="table table-bordered">
-<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
+<div class="row">
 {% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>
+<div class="col-md-1 border p-2 m-1 text-center">
+<b>{{ u.units }}</b><br>{{ u.price_eth }} ETH<br>{{ u.band }}<br>{{ u.status }}<br>
 {% if role=='buyer' and u.status == 'Available' %}
-<button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
+<a href="/buy/{{ u.id }}" class="btn btn-sm btn-success mt-1">Buy</a>
 {% else %}-{% endif %}
-</td></tr>
+</div>
 {% endfor %}
-</table>
+</div>
 </div></div></div>
-
-<script>
-async function buyUnit(id, price) {
-    if (typeof window.ethereum === 'undefined') {
-        alert("MetaMask not found! Please install MetaMask.");
-        return;
-    }
-    try {
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        const tx = {
-            from: accounts[0],
-            to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
-            value: '0x' + (BigInt(price * 1e18)).toString(16)
-        };
-        await window.ethereum.request({ method: 'eth_sendTransaction', params: [tx] });
-        window.location.href = "/buy/" + id;
-    } catch (err) {
-        console.error(err);
-        alert("Transaction failed or cancelled.");
-    }
-}
-</script>
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
 </body></html>
 """
 
 pending_html = """
 <!DOCTYPE html><html><head><title>Pending</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
-<div class="container mt-5"><h3>Pending Transactions</h3>
+<div class="container mt-5"><h3>Pending Actions</h3>
 <table class="table table-bordered">
 <tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th><th>Action</th></tr>
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td>
 <td><a href="/release/{{ u.id }}" class="btn btn-primary btn-sm">Release</a></td></tr>
 {% endfor %}
-</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
+</table></div>
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</body></html>
 """
 
 complete_html = """
@@ -261,7 +289,9 @@ complete_html = """
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td></tr>
 {% endfor %}
-</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
+</table></div>
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</body></html>
 """
 
 # ---- Run ----
