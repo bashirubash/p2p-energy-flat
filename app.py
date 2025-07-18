@@ -29,15 +29,11 @@ class Unit(db.Model):
 # ---- Initialize DB ----
 with app.app_context():
     db.create_all()
-    # Ensure the constant admin exists
-    admin = User.query.filter_by(email="Gurus@gmail.com").first()
-    if not admin:
-        admin = User(name="Guru", meter_number="0000", email="Gurus@gmail.com", password="Guru123", role="admin")
+    if not User.query.filter_by(email="gurus@gmail.com").first():
+        admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
         db.session.add(admin)
-    else:
-        admin.name = "Guru"
-        admin.password = "Guru123"
-        admin.role = "admin"
+        ...
+    db.session.commit()
 
     # Pre-populate units if not already present
     if Unit.query.count() < 50:
