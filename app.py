@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, url_for
+from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 import random
 
@@ -14,7 +14,7 @@ class User(db.Model):
     meter_number = db.Column(db.String(100))
     email = db.Column(db.String(100), unique=True)
     password = db.Column(db.String(100))
-    role = db.Column(db.String(10))
+    role = db.Column(db.String(10))  # admin or buyer
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -32,9 +32,20 @@ with app.app_context():
     if not User.query.filter_by(email="gurus@gmail.com").first():
         admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
         db.session.add(admin)
+        bands = ['A', 'B', 'C', 'D']
         for i in range(50):
-            band = random.choice(['A', 'B', 'C', 'D'])
-            db.session.add(Unit(units=1, price_eth=0.0005, band=band))
+            db.session.add(Unit(units=1, price_eth=0.0005, band=random.choice(bands)))
+        db.session.commit()
+
+    # Preload 15 pending transactions if not exist
+    existing_pending = Unit.query.filter_by(status='Pending').count()
+    if existing_pending < 15:
+        available_units = Unit.query.filter_by(status='Available').limit(15).all()
+        for unit in available_units:
+            unit.status = 'Pending'
+            unit.buyer_meter = '12345678'
+            unit.buyer_email = 'pending@yedc.com'
+            unit.transaction_status = 'Processing'
         db.session.commit()
 
 # ---- Routes ----
@@ -58,17 +69,9 @@ def register():
             return redirect('/register')
         db.session.add(User(name=name, meter_number=meter, email=email, password=password, role='buyer'))
         db.session.commit()
-        session['user'] = email
-        session['role'] = 'buyer'
         session['meter'] = meter
-        return redirect('/welcome')
+        return render_template_string(welcome_html, meter=meter)
     return render_template_string(register_html)
-
-@app.route('/welcome')
-def welcome():
-    if 'user' not in session:
-        return redirect('/login')
-    return render_template_string(welcome_html, meter=session['meter'])
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -88,24 +91,10 @@ def login():
 def dashboard():
     if 'user' not in session:
         return redirect('/login')
-
-    page = int(request.args.get('page', 1))
-    per_page = 10
-    offset = (page - 1) * per_page
-
     role = session['role']
-    if role == 'admin':
-        units = Unit.query.offset(offset).limit(per_page).all()
-        total_units = Unit.query.count()
-    else:
-        units = Unit.query.filter_by(status='Available').offset(offset).limit(per_page).all()
-        total_units = Unit.query.filter_by(status='Available').count()
-
-    next_page = page + 1 if offset + per_page < total_units else None
-    prev_page = page - 1 if page > 1 else None
-
-    return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'],
-                                  page=page, next_page=next_page, prev_page=prev_page)
+    page = request.args.get('page', 1, type=int)
+    units = Unit.query.paginate(page=page, per_page=10)
+    return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'])
 
 @app.route('/add_unit', methods=['POST'])
 def add_unit():
@@ -139,17 +128,7 @@ def pending():
     if session.get('role') != 'admin':
         return redirect('/dashboard')
     pending_units = Unit.query.filter_by(status='Pending').all()
-
-    # Auto-generate fake pending transactions for demo if not enough
-    if len(pending_units) < 10:
-        for i in range(10 - len(pending_units)):
-            u = Unit(units=1, price_eth=0.0005, band=random.choice(['A','B','C','D']), status='Pending',
-                     buyer_meter='1000'+str(i), buyer_email=f'user{i}@demo.com')
-            db.session.add(u)
-        db.session.commit()
-        pending_units = Unit.query.filter_by(status='Pending').all()
-
-    return render_template_string(pending_html, units=pending_units[:10])
+    return render_template_string(pending_html, units=pending_units)
 
 @app.route('/complete')
 def complete():
@@ -176,7 +155,57 @@ def logout():
 
 # ---- HTML Templates ----
 
-# (REUSE THE SAME register_html, login_html, welcome_html FROM PREVIOUS RESPONSE)
+register_html = """
+<!DOCTYPE html><html><head><title>Register - YEDC P2P</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light p-5">
+<div class="container"><h2 class="text-center">YEDC P2P Registration</h2>
+<form method="POST" class="mt-4">
+<input name="name" class="form-control mb-2" placeholder="Name" required>
+<input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
+<input name="email" class="form-control mb-2" placeholder="Email" required>
+<input name="password" class="form-control mb-2" type="password" placeholder="Password" required>
+<input name="confirm" class="form-control mb-3" type="password" placeholder="Confirm Password" required>
+<button type="submit" class="btn btn-primary w-100">Register</button>
+</form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div></body></html>
+"""
+
+login_html = """
+<!DOCTYPE html><html><head><title>Login - YEDC P2P Market</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light p-5"><div class="container">
+<h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
+<input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
+<input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
+<button type="submit" class="btn btn-success w-100">Login</button>
+</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
+"""
+
+welcome_html = """
+<!DOCTYPE html><html><head><title>Welcome</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light p-5">
+<div class="container text-center">
+<h2>Welcome to YEDC Portal!</h2>
+<p>Your meter number is: <b>{{ meter }}</b></p>
+<a href="/dashboard" class="btn btn-primary mt-3">Visit Marketplace</a>
+<button onclick="connectWallet()" class="btn btn-success mt-3">Connect Wallet</button>
+</div>
+
+<script>
+async function connectWallet(){
+    if (typeof window.ethereum !== 'undefined') {
+        await window.ethereum.request({ method: 'eth_requestAccounts' });
+        alert("Wallet connected successfully!");
+    } else {
+        alert("MetaMask not found!");
+    }
+}
+</script>
+
+<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</body></html>
+"""
 
 dashboard_html = """
 <!DOCTYPE html><html><head><title>Dashboard</title>
@@ -184,10 +213,10 @@ dashboard_html = """
 <body><div class="container-fluid">
 <div class="row">
 <div class="col-2 bg-dark text-white p-3" style="min-height:100vh;">
-<h4>YEDC Panel</h4>
+<h4>Admin Panel</h4>
 {% if role == 'admin' %}
-<a href="/dashboard" class="d-block text-white mb-2">Listings</a>
-<a href="/pending" class="d-block text-white mb-2">Pending</a>
+<a href="/dashboard" class="d-block text-white mb-2">View Listings</a>
+<a href="/pending" class="d-block text-white mb-2">Pending Transactions</a>
 <a href="/complete" class="d-block text-white mb-2">Completed</a>
 {% endif %}
 <a href="/logout" class="d-block text-white mt-4">Logout</a>
@@ -204,32 +233,35 @@ dashboard_html = """
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
 <div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
-<div class="col"><button class="btn btn-primary">Add</button></div>
+<div class="col"><button class="btn btn-primary">Add Unit</button></div>
 </form>
 {% endif %}
 
-<div class="row">
-{% for u in units %}
-<div class="col-md-3 border p-2 m-1 text-center">
-<b>{{ u.units }}</b> Units<br>{{ u.price_eth }} ETH<br>Band: {{ u.band }}<br>{{ u.status }}<br>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
+{% for u in units.items %}
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
+<td>
 {% if role=='buyer' and u.status == 'Available' %}
-<a href="/buy/{{ u.id }}" class="btn btn-sm btn-success mt-1">Buy</a>
+<a href="/buy/{{ u.id }}" class="btn btn-success btn-sm">Buy</a>
 {% else %}-{% endif %}
-</div>
+</td></tr>
 {% endfor %}
-</div>
+</table>
 
-<div class="mt-4">
-{% if prev_page %}
-<a href="{{ url_for('dashboard', page=prev_page) }}" class="btn btn-secondary">Previous</a>
+<nav>
+<ul class="pagination">
+{% if units.has_prev %}
+<li class="page-item"><a class="page-link" href="/dashboard?page={{ units.prev_num }}">Previous</a></li>
 {% endif %}
-{% if next_page %}
-<a href="{{ url_for('dashboard', page=next_page) }}" class="btn btn-primary">Next</a>
+{% if units.has_next %}
+<li class="page-item"><a class="page-link" href="/dashboard?page={{ units.next_num }}">Next</a></li>
 {% endif %}
-</div>
+</ul>
+</nav>
 
-</div></div></div>
 <footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
+</div></div></div>
 </body></html>
 """
 
@@ -243,9 +275,7 @@ pending_html = """
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td>
 <td><a href="/release/{{ u.id }}" class="btn btn-primary btn-sm">Release</a></td></tr>
 {% endfor %}
-</table></div>
-<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
-</body></html>
+</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
 """
 
 complete_html = """
@@ -257,9 +287,7 @@ complete_html = """
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td></tr>
 {% endfor %}
-</table></div>
-<footer class="bg-dark text-white text-center p-3 mt-5"><small>© 2025 YEDC Energy Portal</small></footer>
-</body></html>
+</table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
 """
 
 # ---- Run ----
