@@ -35,7 +35,6 @@ with app.app_context():
         bands = ["A", "B", "C", "D"]
         for i in range(50):
             db.session.add(Unit(units=1, price_eth=0.0005, band=random.choice(bands)))
-        # Add at least 10 pending transactions
         for i in range(10):
             unit = Unit(units=1, price_eth=0.0005, band=random.choice(bands), status="Pending", buyer_meter=f"Meter_{i+1}", buyer_email=f"buyer{i+1}@mail.com", transaction_status="Processing")
             db.session.add(unit)
@@ -100,18 +99,6 @@ def dashboard():
 
     return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'], next_page=next_page, prev_page=prev_page)
 
-@app.route('/add_unit', methods=['POST'])
-def add_unit():
-    if session.get('role') != 'admin':
-        return redirect('/dashboard')
-    units = int(request.form['units'])
-    price = float(request.form['price'])
-    band = request.form['band']
-    db.session.add(Unit(units=units, price_eth=price, band=band))
-    db.session.commit()
-    flash('Unit listed successfully')
-    return redirect('/dashboard')
-
 @app.route('/buy/<int:unit_id>')
 def buy(unit_id):
     if session.get('role') != 'buyer':
@@ -124,7 +111,7 @@ def buy(unit_id):
         unit.buyer_meter = session['meter']
         unit.buyer_email = session['user']
         db.session.commit()
-        flash(f'Payment detected! Admin will verify and credit your meter: {session["meter"]}')
+        flash(f'Payment received! Admin will verify and credit your meter: {session["meter"]}')
     return redirect('/dashboard')
 
 @app.route('/pending')
@@ -187,8 +174,8 @@ welcome_html = """
 <body class="p-5"><div class="container text-center">
 <h2>Welcome {{ name }}!</h2>
 <p>Please choose an option below:</p>
-<a href="/dashboard" class="btn btn-success m-2">Visit P2P Marketplace</a>
-<a href="#" onclick="alert('Connect to any custodial wallet like Trust Wallet, Binance, etc.');" class="btn btn-primary m-2">Connect Wallet</a>
+<a href="/dashboard" class="btn btn-success m-2">Visit Marketplace</a>
+<a href="#" onclick="alert('Connect to any custodial wallet like Trust Wallet, MetaMask, Binance etc.');" class="btn btn-primary m-2">Connect Wallet</a>
 </div></body></html>
 """
 
@@ -196,7 +183,7 @@ login_html = """
 <!DOCTYPE html><html><head><title>Login</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
 <body class="bg-light p-5"><div class="container">
-<h2 class="text-center">Login - YEDC P2P</h2><form method="POST" class="mt-4">
+<h2 class="text-center">Login - YEDC</h2><form method="POST" class="mt-4">
 <input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
 <input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
 <button type="submit" class="btn btn-success w-100">Login</button>
@@ -205,14 +192,15 @@ login_html = """
 
 dashboard_html = """
 <!DOCTYPE html><html><head><title>Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/web3@latest/dist/web3.min.js"></script></head>
 <body><div class="container-fluid">
 <div class="row">
 <div class="col-2 bg-dark text-white p-3" style="min-height:100vh;">
 <h4>{{ 'Admin Panel' if role=='admin' else 'Buyer Panel' }}</h4>
 <a href="/dashboard" class="d-block text-white mb-2">Home</a>
 {% if role == 'admin' %}
-<a href="/pending" class="d-block text-white mb-2">Pending Transactions</a>
+<a href="/pending" class="d-block text-white mb-2">Pending</a>
 <a href="/complete" class="d-block text-white mb-2">Completed</a>
 {% else %}
 <a href="/history" class="d-block text-white mb-2">Transaction History</a>
@@ -223,9 +211,7 @@ dashboard_html = """
 <div class="col-10 p-4">
 <h3>Dashboard - {{ role|capitalize }}</h3>
 {% with messages = get_flashed_messages() %}
-{% if messages %}
-<div class="alert alert-info">{{ messages[0] }}</div>
-{% endif %}
+{% if messages %}<div class="alert alert-info">{{ messages[0] }}</div>{% endif %}
 {% endwith %}
 
 {% if role == 'admin' %}
@@ -243,7 +229,7 @@ dashboard_html = """
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
 <td>
 {% if role=='buyer' and u.status == 'Available' %}
-<a href="/buy/{{ u.id }}" class="btn btn-success btn-sm">Pay & Buy</a>
+<button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Pay & Buy</button>
 {% else %}-{% endif %}
 </td></tr>
 {% endfor %}
@@ -258,8 +244,32 @@ dashboard_html = """
 {% endif %}
 </div>
 
-<footer class="text-center mt-5"><small>&copy; 2025 YEDC P2P Payment System</small></footer>
-</div></div></div></body></html>
+<footer class="text-center mt-5"><small>&copy; 2025 YEDC Payment System</small></footer>
+</div></div></div>
+
+<script>
+async function buyUnit(id, price) {
+    if (typeof window.ethereum === 'undefined') {
+        alert("MetaMask or wallet not found! Please connect your wallet.");
+        return;
+    }
+    try {
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const tx = {
+            from: accounts[0],
+            to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
+            value: '0x' + (BigInt(price * 1e18)).toString(16)
+        };
+        await window.ethereum.request({ method: 'eth_sendTransaction', params: [tx] });
+        window.location.href = "/buy/" + id;
+    } catch (err) {
+        console.error(err);
+        alert("Transaction failed or cancelled.");
+    }
+}
+</script>
+
+</body></html>
 """
 
 pending_html = """
