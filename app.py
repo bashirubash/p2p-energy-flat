@@ -32,7 +32,7 @@ with app.app_context():
     if not User.query.filter_by(email="gurus@gmail.com").first():
         admin = User(name="Guru", meter_number="0000", email="gurus@gmail.com", password="Guru123", role="admin")
         db.session.add(admin)
-        ...
+   
     db.session.commit()
 
     # Pre-populate units if not already present
