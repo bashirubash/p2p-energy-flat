@@ -29,18 +29,28 @@ class Unit(db.Model):
 # ---- Initialize DB ----
 with app.app_context():
     db.create_all()
-    if not User.query.filter_by(email="Gurus@gmail.com").first():
+    # Ensure the constant admin exists
+    admin = User.query.filter_by(email="Gurus@gmail.com").first()
+    if not admin:
         admin = User(name="Guru", meter_number="0000", email="Gurus@gmail.com", password="Guru123", role="admin")
         db.session.add(admin)
+    else:
+        admin.name = "Guru"
+        admin.password = "Guru123"
+        admin.role = "admin"
+
+    # Pre-populate units if not already present
+    if Unit.query.count() < 50:
         for i in range(50):
             band = random.choice(["A", "B", "C", "D"])
             db.session.add(Unit(units=1, price_eth=round(random.uniform(0.0004, 0.0007), 6), band=band))
-        # Add 15 random pending
+    # Add 15 random pending
+    if Unit.query.filter_by(status="Pending").count() < 15:
         for i in range(15):
             u = Unit(units=1, price_eth=round(random.uniform(0.0004, 0.0007), 6), band=random.choice(["A","B","C","D"]),
                      status="Pending", buyer_meter=f"MTR{random.randint(1000,9999)}", buyer_email=f"user{random.randint(1,50)}@mail.com")
             db.session.add(u)
-        db.session.commit()
+    db.session.commit()
 
 # ---- Routes ----
 @app.route('/')
@@ -63,7 +73,7 @@ def register():
             return redirect('/register')
         db.session.add(User(name=name, meter_number=meter, email=email, password=password, role='buyer'))
         db.session.commit()
-        flash('Welcome! Wallet connection recommended.')
+        flash('Welcome! Please connect your wallet.')
         return redirect('/login')
     return render_template_string(register_html)
 
