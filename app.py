@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session, flash, render_template_string, url_for
+from flask import Flask, request, redirect, session, flash, render_template_string
 from flask_sqlalchemy import SQLAlchemy
 import random
 
@@ -14,7 +14,7 @@ class User(db.Model):
     meter_number = db.Column(db.String(100))
     email = db.Column(db.String(100), unique=True)
     password = db.Column(db.String(100))
-    role = db.Column(db.String(10))  # admin or buyer
+    role = db.Column(db.String(10))  # admin, seller, buyer
 
 class Unit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -29,13 +29,11 @@ class Unit(db.Model):
 with app.app_context():
     db.create_all()
     if not User.query.filter_by(email="admin@yedc.com").first():
-        admin = User(name="Admin", meter_number="0000", email="admin@yedc.com", password="Admin123", role="admin")
+        admin = User(name="Admin", meter_number="0000", email="Gurus@yedc.com", password="Guru123", role="admin")
         db.session.add(admin)
-        # Add 50 mixed band products
         bands = ['A', 'B', 'C', 'D']
         for i in range(50):
             db.session.add(Unit(units=1, price_eth=round(random.uniform(0.0005, 0.0015), 6), band=random.choice(bands)))
-        # Add 15 random pending transactions
         for i in range(15):
             unit = Unit(units=1, price_eth=round(random.uniform(0.0005, 0.0015), 6), band=random.choice(bands), status='Pending', buyer_meter='123456', buyer_email='buyer@example.com')
             db.session.add(unit)
@@ -89,11 +87,40 @@ def dashboard():
     role = session['role']
     page = int(request.args.get('page', 1))
     per_page = 10
-    if role == 'admin':
+    if role in ['admin', 'seller']:
         units = Unit.query.paginate(page=page, per_page=per_page, error_out=False)
     else:
         units = Unit.query.filter_by(status='Available').paginate(page=page, per_page=per_page, error_out=False)
     return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'])
+
+@app.route('/add_unit', methods=['POST'])
+def add_unit():
+    if session.get('role') not in ['admin', 'seller']:
+        return redirect('/dashboard')
+    units = int(request.form['units'])
+    price = float(request.form['price'])
+    band = request.form['band']
+    db.session.add(Unit(units=units, price_eth=price, band=band))
+    db.session.commit()
+    flash('Unit listed successfully')
+    return redirect('/dashboard')
+
+@app.route('/add_seller', methods=['GET', 'POST'])
+def add_seller():
+    if session.get('role') != 'admin':
+        return redirect('/dashboard')
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        password = request.form['password']
+        if User.query.filter_by(email=email).first():
+            flash('Seller email already exists.')
+            return redirect('/add_seller')
+        db.session.add(User(name=name, meter_number='0000', email=email, password=password, role='seller'))
+        db.session.commit()
+        flash('Seller added successfully.')
+        return redirect('/dashboard')
+    return render_template_string(add_seller_html)
 
 @app.route('/buy/<int:unit_id>')
 def buy(unit_id):
@@ -107,26 +134,26 @@ def buy(unit_id):
         unit.buyer_meter = session['meter']
         unit.buyer_email = session['user']
         db.session.commit()
-        flash(f'Unit purchased! Admin will verify and credit your meter: {session["meter"]}')
+        flash(f'Unit purchased! Admin/Seller will verify and credit your meter: {session["meter"]}')
     return redirect('/dashboard')
 
 @app.route('/pending')
 def pending():
-    if session.get('role') != 'admin':
+    if session.get('role') not in ['admin', 'seller']:
         return redirect('/dashboard')
     pending_units = Unit.query.filter_by(status='Pending').all()
     return render_template_string(pending_html, units=pending_units)
 
 @app.route('/complete')
 def complete():
-    if session.get('role') != 'admin':
+    if session.get('role') not in ['admin', 'seller']:
         return redirect('/dashboard')
     complete_units = Unit.query.filter_by(status='Sold').all()
     return render_template_string(complete_html, units=complete_units)
 
 @app.route('/release/<int:unit_id>')
 def release(unit_id):
-    if session.get('role') != 'admin':
+    if session.get('role') not in ['admin', 'seller']:
         return redirect('/dashboard')
     unit = Unit.query.get(unit_id)
     unit.status = 'Sold'
@@ -151,8 +178,9 @@ def logout():
 
 register_html = """
 <!DOCTYPE html><html><head><title>Register</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="bg-light p-5"><div class="container"><h2 class="text-center">Register</h2>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light p-5"><div class="container">
+<h2 class="text-center">YEDC Registration</h2>
 <form method="POST" class="mt-4">
 <input name="name" class="form-control mb-2" placeholder="Name" required>
 <input name="meter" class="form-control mb-2" placeholder="Meter Number" required>
@@ -163,31 +191,14 @@ register_html = """
 </form><a href="/login" class="d-block text-center mt-3">Already have an account? Login</a></div></body></html>
 """
 
-login_html = """
-<!DOCTYPE html><html><head><title>Login</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="bg-light p-5"><div class="container"><h2 class="text-center">Login</h2>
-<form method="POST" class="mt-4">
-<input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
-<input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
-<button type="submit" class="btn btn-success w-100">Login</button>
-</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
-"""
-
 welcome_html = """
 <!DOCTYPE html><html><head><title>Welcome</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body class="bg-light p-5"><div class="container text-center">
-<h2>Welcome to YEDC System</h2>
-<p>Please connect your wallet or visit the marketplace.</p>
-<a href="#" onclick="connectWallet()" class="btn btn-primary m-2">Connect Wallet</a>
-<a href="/dashboard" class="btn btn-success m-2">Visit Marketplace</a>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body class="p-5">
+<div class="container text-center">
+<h2>Welcome to YEDC!</h2>
+<a href="/dashboard" class="btn btn-primary m-3">Go to Marketplace</a>
+<a href="#" onclick="connectWallet()" class="btn btn-success m-3">Connect Wallet</a>
 </div>
-
-<footer class="text-center mt-5">
-<hr><p>&copy; 2025 YEDC Energy Platform</p>
-</footer>
-
 <script>
 async function connectWallet() {
     if (typeof window.ethereum !== 'undefined') {
@@ -206,85 +217,104 @@ async function connectWallet() {
 </body></html>
 """
 
+login_html = """
+<!DOCTYPE html><html><head><title>Login</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light p-5"><div class="container">
+<h2 class="text-center">YEDC Login</h2><form method="POST" class="mt-4">
+<input name="email" class="form-control mb-3" type="email" placeholder="Email" required>
+<input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
+<button type="submit" class="btn btn-success w-100">Login</button>
+</form><a href="/register" class="d-block text-center mt-3">Register</a></div></body></html>
+"""
+
 dashboard_html = """
 <!DOCTYPE html><html><head><title>Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
-<body><div class="container-fluid"><div class="row">
-<div class="col-2 bg-dark text-white p-3" style="min-height:100vh;">
-<h4>{{ 'Admin Panel' if role=='admin' else 'Buyer Panel' }}</h4>
-<a href="/dashboard" class="d-block text-white mb-2">Home</a>
-{% if role == 'admin' %}
-<a href="/pending" class="d-block text-white mb-2">Pending</a>
-<a href="/complete" class="d-block text-white mb-2">Completed</a>
-{% else %}
-<a href="/history" class="d-block text-white mb-2">Transaction History</a>
-{% endif %}
-<a href="/logout" class="d-block text-white mt-4">Logout</a>
-</div>
-
-<div class="col-10 p-4"><h3>Dashboard - {{ role|capitalize }}</h3>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
+<div class="container mt-4">
+<h3>{{ role|capitalize }} Panel</h3>
 {% with messages = get_flashed_messages() %}
-{% if messages %}<div class="alert alert-info">{{ messages[0] }}</div>{% endif %}
+{% if messages %}
+<div class="alert alert-info">{{ messages[0] }}</div>
+{% endif %}
 {% endwith %}
 
-{% if role == 'admin' %}
+{% if role == 'buyer' %}
+<a href="/dashboard" class="btn btn-outline-primary m-1">Home</a>
+<a href="/history" class="btn btn-outline-secondary m-1">Transaction History</a>
+<a href="#" onclick="connectWallet()" class="btn btn-outline-success m-1">Connect Wallet</a>
+{% endif %}
+
+{% if role in ['admin', 'seller'] %}
 <form method="POST" action="/add_unit" class="row my-3">
 <div class="col"><input name="units" class="form-control" placeholder="Units" required></div>
 <div class="col"><input name="price" class="form-control" placeholder="Price ETH" required></div>
 <div class="col"><select name="band" class="form-control"><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
 <div class="col"><button class="btn btn-primary">Add Unit</button></div>
 </form>
+<a href="/pending" class="btn btn-warning m-1">Pending</a>
+<a href="/complete" class="btn btn-success m-1">Completed</a>
+<a href="/add_seller" class="btn btn-dark m-1">Add Seller</a>
 {% endif %}
 
-<table class="table table-bordered"><tr><th>ID</th><th>Units</th><th>Price</th><th>Band</th><th>Status</th><th>Action</th></tr>
+<table class="table table-bordered mt-3">
+<tr><th>ID</th><th>Units</th><th>Price (ETH)</th><th>Band</th><th>Status</th><th>Action</th></tr>
 {% for u in units.items %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td>
-<td>{% if role=='buyer' and u.status=='Available' %}
+<td>{% if role=='buyer' and u.status == 'Available' %}
 <button onclick="buyUnit('{{ u.id }}','{{ u.price_eth }}')" class="btn btn-success btn-sm">Buy</button>
 {% else %}-{% endif %}</td></tr>
 {% endfor %}
 </table>
 
-<div class="d-flex justify-content-center">
+<nav>
+<ul class="pagination">
 {% if units.has_prev %}
-<a href="{{ url_for('dashboard', page=units.prev_num) }}" class="btn btn-secondary m-1">Previous</a>
+<li class="page-item"><a class="page-link" href="{{ url_for('dashboard', page=units.prev_num) }}">Previous</a></li>
 {% endif %}
 {% if units.has_next %}
-<a href="{{ url_for('dashboard', page=units.next_num) }}" class="btn btn-secondary m-1">Next</a>
+<li class="page-item"><a class="page-link" href="{{ url_for('dashboard', page=units.next_num) }}">Next</a></li>
 {% endif %}
+</ul>
+</nav>
+
+<a href="/logout" class="btn btn-danger mt-3">Logout</a>
 </div>
 
-<footer class="text-center mt-4"><hr><p>&copy; 2025 YEDC Energy Platform</p></footer>
-
 <script>
-async function buyUnit(id, price) {
-    if (typeof window.ethereum === 'undefined') {
-        alert("MetaMask or compatible wallet not found. Use DApp browser.");
-        return;
+async function connectWallet() {
+    if (typeof window.ethereum !== 'undefined') {
+        try {
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            alert("Wallet connected successfully!");
+        } catch (err) {
+            console.error(err);
+            alert("Wallet connection rejected.");
+        }
+    } else {
+        alert("No wallet found. Use MetaMask or Trust Wallet browser.");
     }
-    try {
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        const tx = {
-            from: accounts[0],
-            to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b",
-            value: '0x' + (BigInt(price * 1e18)).toString(16)
-        };
-        await window.ethereum.request({ method: 'eth_sendTransaction', params: [tx] });
+}
+async function buyUnit(id, price) {
+    if (typeof window.ethereum !== 'undefined') {
+        const accounts = await ethereum.request({ method: 'eth_requestAccounts' });
+        const tx = { from: accounts[0], to: "0x9311DeE48D671Db61947a00B3f9Eae6408Ec4D7b", value: '0x' + (BigInt(price * 1e18)).toString(16) };
+        await ethereum.request({ method: 'eth_sendTransaction', params: [tx] });
         window.location.href = "/buy/" + id;
-    } catch (err) {
-        console.error(err);
-        alert("Transaction failed or cancelled.");
+    } else {
+        alert("Wallet not found.");
     }
 }
 </script>
-</div></div></div></body></html>
+</body></html>
 """
 
 pending_html = """
 <!DOCTYPE html><html><head><title>Pending</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
 <div class="container mt-5"><h3>Pending Transactions</h3>
-<table class="table table-bordered"><tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th><th>Action</th></tr>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th><th>Action</th></tr>
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td>
 <td><a href="/release/{{ u.id }}" class="btn btn-primary btn-sm">Release</a></td></tr>
@@ -296,7 +326,8 @@ complete_html = """
 <!DOCTYPE html><html><head><title>Completed</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
 <div class="container mt-5"><h3>Completed Transactions</h3>
-<table class="table table-bordered"><tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th></tr>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Meter</th><th>Email</th><th>Band</th></tr>
 {% for u in units %}
 <tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.buyer_meter }}</td><td>{{ u.buyer_email }}</td><td>{{ u.band }}</td></tr>
 {% endfor %}
@@ -304,14 +335,27 @@ complete_html = """
 """
 
 history_html = """
-<!DOCTYPE html><html><head><title>Transaction History</title>
+<!DOCTYPE html><html><head><title>History</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
-<div class="container mt-5"><h3>Your Transaction History</h3>
-<table class="table table-bordered"><tr><th>ID</th><th>Units</th><th>Price</th><th>Band</th><th>Status</th></tr>
+<div class="container mt-5"><h3>Your Transactions</h3>
+<table class="table table-bordered">
+<tr><th>ID</th><th>Units</th><th>Price</th><th>Status</th><th>Band</th></tr>
 {% for u in units %}
-<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.band }}</td><td>{{ u.status }}</td></tr>
+<tr><td>{{ u.id }}</td><td>{{ u.units }}</td><td>{{ u.price_eth }}</td><td>{{ u.status }}</td><td>{{ u.band }}</td></tr>
 {% endfor %}
 </table><a href="/dashboard" class="btn btn-secondary">Back</a></div></body></html>
+"""
+
+add_seller_html = """
+<!DOCTYPE html><html><head><title>Add Seller</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head><body>
+<div class="container mt-5"><h3>Add Seller Account</h3>
+<form method="POST" class="mt-4">
+<input name="name" class="form-control mb-2" placeholder="Seller Name" required>
+<input name="email" class="form-control mb-2" placeholder="Seller Email" required>
+<input name="password" class="form-control mb-3" type="password" placeholder="Password" required>
+<button type="submit" class="btn btn-primary">Add Seller</button>
+</form><a href="/dashboard" class="btn btn-secondary mt-3">Back</a></div></body></html>
 """
 
 # ---- Run ----
