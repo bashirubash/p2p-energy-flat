@@ -95,9 +95,9 @@ def dashboard():
     page = int(request.args.get('page', 1))
     per_page = 10
     if role in ['admin', 'seller']:
-        units = Unit.query.paginate(page, per_page, False)
+        units = Unit.query.paginate(page=page, per_page=per_page, error_out=False)
     else:
-        units = Unit.query.filter_by(status='Available').paginate(page, per_page, False)
+        units = Unit.query.filter_by(status='Available').paginate(page=page, per_page=per_page, error_out=False)
     return render_template_string(dashboard_html, units=units, role=role, meter=session['meter'])
 
 @app.route('/add_unit', methods=['POST'])
@@ -344,4 +344,4 @@ history_html = """
 
 # ---- Run ----
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
